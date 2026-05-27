@@ -3804,6 +3804,7 @@ export const PlayerScreen = {
       ["loadeddata", onPlayable],
       ["canplay", onPlayable],
       ["avplaytrackschanged", onTrackListChanged],
+      ["hlstrackschanged", onTrackListChanged],
       ["dashtrackschanged", onTrackListChanged]
     ];
 
@@ -3865,6 +3866,8 @@ export const PlayerScreen = {
     });
 
     base.push({ action: "source", icon: "assets/icons/ic_player_source.svg", title: t("sources_title", {}, "Sources") });
+
+    base.push({ action: "switchEngine", label: "<>", title: t("cd_switch_player_engine", {}, "Switch player engine") });
 
     if (Array.isArray(uiState.episodesAll) && uiState.episodesAll.length) {
       base.push({ action: "episodes", icon: "assets/icons/ic_player_episodes.svg", title: t("episodes_panel_title", {}, "Episodes") });
@@ -4927,6 +4930,7 @@ export const PlayerScreen = {
   },
 
   refreshTrackDialogs() {
+    this.invalidateTrackDialogCaches();
     this.syncTrackState();
     if (this.startupTrackPreferenceReady) {
       this.applyStartupAudioPreference();
@@ -7348,11 +7352,15 @@ export const PlayerScreen = {
 	        applied = typeof PlayerController.setAvPlayAudioTrack === "function" && Number.isFinite(nativeTrackIndex)
 	          ? PlayerController.setAvPlayAudioTrack(nativeTrackIndex)
 	          : false;
-	      } else {
+      } else {
+        const nativeTrackIndex = Number(embeddedTrack?.nativeTrackIndex);
+        const targetTrackIndex = Number.isFinite(nativeTrackIndex) && nativeTrackIndex >= 0
+          ? nativeTrackIndex
+          : selectedEntry.embeddedAudioTrackIndex;
 	        applied = typeof PlayerController.setWebOsEmbeddedAudioTrack === "function"
-	          ? PlayerController.setWebOsEmbeddedAudioTrack(selectedEntry.embeddedAudioTrackIndex)
+	          ? PlayerController.setWebOsEmbeddedAudioTrack(targetTrackIndex, selectedEntry.embeddedAudioTrackIndex)
 	          : false;
-	      }
+      }
 		      if (applied) {
 		        this.selectedEmbeddedAudioTrackIndex = selectedEntry.embeddedAudioTrackIndex;
 		        this.selectedAudioTrackIndex = selectedEntry.embeddedAudioTrackIndex;
@@ -8388,6 +8396,11 @@ export const PlayerScreen = {
       return;
     }
 
+    if (action === "switchEngine") {
+      this.switchPlaybackEngine();
+      return;
+    }
+
     if (action === "episodes") {
       this.toggleEpisodePanel();
       return;
@@ -8420,6 +8433,22 @@ export const PlayerScreen = {
       this.cycleAspectMode();
       return;
     }
+  },
+
+  switchPlaybackEngine() {
+    const targetEngine = typeof PlayerController.getAlternativePlaybackEngine === "function"
+      ? PlayerController.getAlternativePlaybackEngine(this.activePlaybackUrl)
+      : null;
+    if (!targetEngine || !this.activePlaybackUrl) {
+      this.showAspectToast(t("player_engine_switch_unavailable", {}, "No alternate player engine"));
+      return;
+    }
+    this.showAspectToast(t("player_engine_switching_title", {}, "Switching player"));
+    void this.playStreamByUrl(this.activePlaybackUrl, {
+      preservePlaybackState: true,
+      resetSilentAudioState: false,
+      forceEngine: targetEngine
+    });
   },
 
   consumeBackRequest() {

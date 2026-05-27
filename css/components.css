@@ -9089,6 +9089,10 @@ button:focus-visible {
   --player-subtitle-font-weight: 500;
   --player-subtitle-shadow: 0 0 2px #000000, 0 0 4px #000000;
   --player-subtitle-offset: 0vh;
+  --player-controls-x: 32px;
+  --player-controls-y: 24px;
+  --player-control-size: 48px;
+  --player-control-icon: 24px;
 }
 
 #videoPlayer::cue {
@@ -9243,7 +9247,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  padding: var(--tv-safe-gutter);
+  padding: var(--player-controls-y) var(--player-controls-x);
   opacity: 1;
   transition: opacity 200ms ease;
 }
@@ -9255,13 +9259,10 @@ button:focus-visible {
 
 .player-controls-gradient-top {
   top: 0;
-  right: 0;
-  bottom: 0;
   left: 0;
-  inset: 0;
-  background:
-    linear-gradient(180deg, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.18) 34%, rgba(0, 0, 0, 0) 60%),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.52) 34%, rgba(0, 0, 0, 0) 62%);
+  right: 0;
+  height: 150px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.7) 0%, rgba(0, 0, 0, 0) 100%);
 }
 
 .player-controls-gradient-bottom {
@@ -9269,8 +9270,8 @@ button:focus-visible {
   left: 0;
   right: 0;
   bottom: 0;
-  height: min(36vh, 340px);
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.2) 42%, rgba(0, 0, 0, 0.82) 100%);
+  height: 200px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.8) 100%);
 }
 
 .player-controls-overlay.hidden {
@@ -9292,8 +9293,7 @@ button:focus-visible {
 }
 
 .player-controls-overlay.pause-overlay-active .player-controls-bottom {
-  opacity: 0;
-  pointer-events: none;
+  opacity: 0.24;
 }
 
 .player-controls-overlay.pause-overlay-active .player-meta,
@@ -9314,51 +9314,51 @@ button:focus-visible {
   position: relative;
   z-index: 1;
   color: rgba(245, 249, 255, 0.9);
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.7);
+  text-shadow: none;
   transition: opacity 160ms ease;
 }
 
 .player-clock {
-  font-size: clamp(32px, 2.1vw, 40px);
+  font-size: 13px;
   font-weight: 600;
   line-height: 1;
 }
 
 .player-ends-at {
   margin-top: 2px;
-  font-size: var(--tv-caption-text);
-  color: rgba(231, 238, 246, 0.82);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .player-controls-bottom {
   position: relative;
   z-index: 1;
-  padding-top: clamp(68px, 7vh, 96px);
+  padding-top: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--tv-card-gap);
+  gap: 0;
 }
 
 .player-meta {
   max-width: min(100%, 1160px);
-  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.65);
+  text-shadow: none;
 }
 
 .player-title {
-  font-size: clamp(40px, 2.8vw, 56px);
+  font-size: 28px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.18;
 }
 
 .player-subtitle {
-  margin-top: 4px;
-  font-size: var(--tv-subtitle-text);
+  margin-top: 2px;
+  font-size: 16px;
   color: rgba(239, 245, 251, 0.9);
 }
 
 .player-meta-tertiary {
-  margin-top: 6px;
-  font-size: var(--tv-secondary-text);
+  margin-top: 0;
+  font-size: 14px;
   color: rgba(255, 255, 255, 0.68);
 }
 
@@ -9371,13 +9371,14 @@ button:focus-visible {
 
 .player-progress-shell {
   width: 100%;
-  padding: 6px 0;
+  padding: 0;
   outline: none;
+  margin-top: 12px;
 }
 
 .player-progress-track {
   width: 100%;
-  height: 8px;
+  height: 6px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.3);
   overflow: hidden;
@@ -9385,7 +9386,7 @@ button:focus-visible {
 }
 
 .player-progress-shell.focused .player-progress-track {
-  height: 14px;
+  height: 10px;
   background: rgba(255, 255, 255, 0.45);
 }
 
@@ -9398,7 +9399,7 @@ button:focus-visible {
 }
 
 .player-controls-row {
-  margin-top: clamp(18px, 1.4vw, 28px);
+  margin-top: 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -9408,13 +9409,13 @@ button:focus-visible {
 .player-control-buttons {
   display: flex;
   align-items: center;
-  gap: clamp(12px, 1vw, 18px);
+  gap: 4px;
 }
 
 .player-control-btn {
-  width: var(--tv-control-size);
-  min-width: var(--tv-control-size);
-  height: var(--tv-control-size);
+  width: var(--player-control-size);
+  min-width: var(--player-control-size);
+  height: var(--player-control-size);
   padding: 0;
   border-radius: 999px;
   border: none;
@@ -9429,8 +9430,8 @@ button:focus-visible {
 }
 
 .player-control-icon {
-  width: var(--tv-control-icon-size);
-  height: var(--tv-control-icon-size);
+  width: var(--player-control-icon);
+  height: var(--player-control-icon);
   display: block;
   filter: invert(1) brightness(1.15);
 }
@@ -9481,10 +9482,10 @@ button:focus-visible {
 
 .player-time-label {
   margin-left: auto;
-  font-size: clamp(20px, 1.3vw, 26px);
-  font-weight: 500;
-  color: rgba(244, 248, 253, 0.96);
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.7);
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: none;
 }
 
 .player-episode-panel {
@@ -10000,8 +10001,9 @@ button:focus-visible {
   z-index: 34;
   pointer-events: auto;
   background:
-    linear-gradient(90deg, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0.52) 34%, rgba(0, 0, 0, 0.14) 100%),
-    rgba(0, 0, 0, 0.32);
+    linear-gradient(90deg, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0) 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, rgba(0, 0, 0, 0.4) 30%, rgba(0, 0, 0, 0.2) 60%, rgba(0, 0, 0, 0) 100%),
+    rgba(0, 0, 0, 0.34);
   opacity: 1;
   transition: opacity 180ms ease;
 }
@@ -10015,8 +10017,8 @@ button:focus-visible {
   position: absolute;
   z-index: 36;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: var(--player-background-elevated);
+  border: none;
+  background: transparent;
   box-sizing: border-box;
   opacity: 1;
   transition: opacity 160ms ease;
@@ -10029,34 +10031,34 @@ button:focus-visible {
 
 .player-subtitle-modal,
 .player-audio-modal {
-  left: 52px;
-  bottom: 76px;
-  width: min(1060px, calc(100vw - 104px));
-  max-height: calc(100vh - 148px);
-  padding: 36px 32px 28px;
+  left: 44px;
+  bottom: 64px;
+  width: min(724px, calc(100vw - 88px));
+  max-height: calc(100vh - 92px);
+  padding: 0;
   display: flex;
   flex-direction: column;
 }
 
 .player-audio-modal {
-  width: min(620px, calc(100vw - 104px));
-  padding: 30px 24px 22px;
+  width: min(724px, calc(100vw - 88px));
 }
 
 .player-speed-modal {
-  left: 52px;
-  bottom: 76px;
-  width: 380px;
-  max-height: calc(100vh - 132px);
-  padding: 30px 24px 24px;
+  left: 44px;
+  bottom: 64px;
+  width: 300px;
+  max-height: calc(100vh - 128px);
+  padding: 24px;
   overflow: hidden;
+  background: var(--player-background-elevated);
 }
 
 .player-dialog-title {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 700;
-  margin-bottom: 14px;
-  color: var(--player-text-primary);
+  margin-bottom: 8px;
+  color: #ffffff;
 }
 
 .player-dialog-tabs {
@@ -10094,7 +10096,7 @@ button:focus-visible {
 .player-dialog-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   overflow-y: auto;
   min-height: 0;
   padding-right: 4px;
@@ -10106,11 +10108,11 @@ button:focus-visible {
 }
 
 .player-dialog-item {
-  min-height: 64px;
-  border-radius: 12px;
+  min-height: 58px;
+  border-radius: 10px;
   border: 1px solid transparent;
   background: transparent;
-  padding: 10px 12px;
+  padding: 9px 12px;
   display: grid;
   grid-template-columns: 1fr auto;
   grid-template-rows: auto auto;
@@ -10131,8 +10133,8 @@ button:focus-visible {
 }
 
 .player-dialog-item.focused {
-  border-color: transparent;
-  background: var(--player-secondary);
+  border-color: var(--player-focus-ring);
+  background: var(--player-focus-background);
   box-shadow: none;
 }
 
@@ -10142,8 +10144,8 @@ button:focus-visible {
 }
 
 .player-dialog-item.selected.focused {
-  background: var(--player-secondary);
-  border-color: transparent;
+  background: var(--player-focus-background);
+  border-color: var(--player-focus-ring);
 }
 
 .player-subtitle-modal .player-dialog-item.focused {
@@ -10166,7 +10168,7 @@ button:focus-visible {
 }
 
 .player-dialog-item-main {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--player-text-primary);
   line-height: 1.16;
@@ -10177,7 +10179,7 @@ button:focus-visible {
 .player-dialog-item.focused .player-dialog-item-main,
 .player-dialog-item.focused .player-dialog-item-sub,
 .player-dialog-item.focused .player-dialog-item-check {
-  color: #111111;
+  color: var(--player-text-primary);
 }
 
 .player-subtitle-modal .player-dialog-item.focused .player-dialog-item-main,
@@ -10246,7 +10248,7 @@ button:focus-visible {
 
 .player-dialog-item-sub {
   margin-top: 2px;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--player-text-secondary);
   grid-column: 1 / 2;
   grid-row: 2 / 3;
@@ -10256,7 +10258,7 @@ button:focus-visible {
   grid-column: 2 / 3;
   grid-row: 1 / 3;
   align-self: center;
-  font-size: 22px;
+  font-size: 20px;
   color: var(--player-text-primary);
 }
 
@@ -10273,7 +10275,8 @@ button:focus-visible {
   width: 520px;
   height: 100%;
   z-index: 37;
-  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: none;
+  border-radius: 16px 0 0 16px;
   background: var(--player-background-elevated);
   padding: 24px;
   display: flex;
@@ -10506,8 +10509,8 @@ button:focus-visible {
 }
 
 .player-audio-track-list {
-  width: min(100%, 520px);
-  max-height: 56vh;
+  width: 444px;
+  max-height: 620px;
 }
 
 .player-audio-track-list .player-dialog-item {
@@ -10530,8 +10533,8 @@ button:focus-visible {
 }
 
 .player-speed-modal .player-dialog-list {
-  max-height: calc(100vh - 244px);
-  padding-bottom: 12px;
+  max-height: calc(100vh - 228px);
+  padding: 4px 0 0;
 }
 
 .series-detail-shell {
