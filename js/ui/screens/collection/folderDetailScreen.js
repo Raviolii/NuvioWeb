@@ -1274,6 +1274,21 @@ export const FolderDetailScreen = {
     }
   },
 
+  consumeBackRequest() {
+    if (!this.useHomeFollowLayout) {
+      return false;
+    }
+    if (this.continueWatchingMenu) {
+      HomeScreen.closeContinueWatchingMenu.call(this);
+      return true;
+    }
+    if (this.posterHoldMenu) {
+      HomeScreen.closePosterHoldMenu.call(this);
+      return true;
+    }
+    return false;
+  },
+
   cleanup() {
     if (this.useHomeFollowLayout) {
       HomeScreen.cancelModernCameraFollow.call(this, { stopAnimations: true });

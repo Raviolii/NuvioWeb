@@ -4081,11 +4081,16 @@ export const SettingsScreen = {
       void this.render({ refreshModel: false });
       return true;
     }
-    if (!this.optionDialog) {
-      return false;
+    if (this.optionDialog) {
+      this.closeOptionDialog();
+      void this.render({ refreshModel: false });
+      return true;
     }
-    this.closeOptionDialog();
-    void this.render({ refreshModel: false });
+    if (this.focusZone === "sidebar") {
+      Platform.exitApp();
+    } else {
+      void this.openSidebar();
+    }
     return true;
   },
 

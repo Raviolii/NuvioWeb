@@ -356,10 +356,15 @@ export const PluginScreen = {
   },
 
   consumeBackRequest() {
-    if (!this.qrOverlayOpen) {
-      return false;
+    if (this.qrOverlayOpen) {
+      this.closeQrOverlay();
+      return true;
     }
-    this.closeQrOverlay();
+    if (this.focusZone === "sidebar") {
+      Platform.exitApp();
+    } else {
+      void this.openSidebar();
+    }
     return true;
   },
 

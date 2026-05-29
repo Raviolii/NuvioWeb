@@ -7297,7 +7297,20 @@ export const HomeScreen = {
       this.closePosterHoldMenu();
       return true;
     }
-    return false;
+    if (this.layoutMode === "modern") {
+      this.cancelFocusedPosterFlow();
+      this.collapseFocusedPoster();
+    }
+    const sidebarFocused = Boolean(
+      this.container?.querySelector(".modern-sidebar-panel .focusable.focused")
+      || this.container?.querySelector(".home-sidebar .focusable.focused")
+    );
+    if (sidebarFocused) {
+      Platform.exitApp();
+    } else {
+      this.openSidebar();
+    }
+    return true;
   },
 
   // ---------------------------------------------------------------------------
