@@ -45,7 +45,7 @@ It acts as a client-side interface that can integrate with the **Stremio addon e
 
 - TizenBrew wrapper: `NuvioMedia/NuvioTVTizen`
 - webOS metadata repo: `NuvioMedia/NuvioWebOS`
-- desktop installer repo: `NuvioMedia/NuvioWebTVInstaller`
+- Desktop installer repo: `NuvioMedia/NuvioWebTVInstaller`
 
 ## Origins / Credits
 
