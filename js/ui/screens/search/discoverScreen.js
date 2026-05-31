@@ -354,7 +354,7 @@ export const DiscoverScreen = {
     }
   },
 
-  async reloadItems() {
+  async reloadItems({ suppressLoadingRender = false } = {}) {
     const selectedCatalog = this.catalogOptions.find((entry) => entry.key === this.selectedCatalogKey) || null;
     this.captureViewState();
     this.items = [];
@@ -365,7 +365,7 @@ export const DiscoverScreen = {
     this.lastFocusedDiscoverItemId = "";
     this.pendingRestoreFocus = false;
     this.savedScrollTop = 0;
-    if (!this.suppressInitialLoadingRenders) {
+    if (!suppressLoadingRender && !this.suppressInitialLoadingRenders) {
       this.render();
     }
     if (!selectedCatalog) {
@@ -377,10 +377,10 @@ export const DiscoverScreen = {
     }
 
     this.loading = false;
-    await this.loadNextPage({ restoreFocusToGrid: false });
+    await this.loadNextPage({ restoreFocusToGrid: false, suppressLoadingRender });
   },
 
-  async loadNextPage({ restoreFocusToGrid = true, preserveViewport = false } = {}) {
+  async loadNextPage({ restoreFocusToGrid = true, preserveViewport = false, suppressLoadingRender = false } = {}) {
     if (this.loading || !this.hasMore) {
       return;
     }
@@ -397,7 +397,7 @@ export const DiscoverScreen = {
     this.captureViewState();
     this.pendingRestoreFocus = Boolean(restoreFocusToGrid);
     this.preserveViewportOnNextRender = Boolean(preserveViewport);
-    if (!preserveViewport && !this.suppressInitialLoadingRenders) {
+    if (!suppressLoadingRender && !preserveViewport && !this.suppressInitialLoadingRenders) {
       this.render();
     }
 
@@ -507,21 +507,21 @@ export const DiscoverScreen = {
       if (!value || value === this.selectedType) return;
       this.selectedType = value;
       this.updateCatalogOptions();
-      this.reloadItems();
+      this.reloadItems({ suppressLoadingRender: true });
       return;
     }
     if (kind === "catalog") {
       if (!value || value === this.selectedCatalogKey) return;
       this.selectedCatalogKey = value;
       this.updateGenreOptions();
-      this.reloadItems();
+      this.reloadItems({ suppressLoadingRender: true });
       return;
     }
     if (kind === "genre") {
       const safeValue = value || "Default";
       if (safeValue === this.selectedGenre) return;
       this.selectedGenre = safeValue;
-      this.reloadItems();
+      this.reloadItems({ suppressLoadingRender: true });
     }
   },
 
@@ -725,13 +725,17 @@ export const DiscoverScreen = {
     const kind = this.openPicker;
     const options = this.getPickerOptions(kind);
     const option = options[this.pickerOptionIndex] || null;
+    const currentValue = this.getCurrentPickerValue(kind);
+    const hasChanged = Boolean(option) && option.value !== currentValue;
     this.lastFocusedAction = kind === "type"
       ? "discoverFilterType"
       : (kind === "catalog" ? "discoverFilterCatalog" : "discoverFilterGenre");
     this.lastFocusedKey = null;
     this.lastFocusedDiscoverItemId = "";
     this.openPicker = null;
-    this.render();
+    if (!hasChanged) {
+      this.render();
+    }
     if (option) {
       this.setPickerValue(kind, option.value);
     }

@@ -767,6 +767,8 @@ export const LibraryScreen = {
       selector = `.library-picker.open .library-picker-option[data-option-index="${Number(state.pickerFocusIndex || 0)}"]`;
     } else if (this.pendingPickerRestore) {
       selector = `.library-picker-anchor[data-picker="${selectorValue(this.pendingPickerRestore)}"]`;
+    } else if (this.lastMainFocus?.matches?.(".library-picker-anchor")) {
+      selector = this.getMainFocusSelector(this.lastMainFocus);
     } else if (state.lastFocusedPosterKey) {
       selector = `.library-grid-card[data-focus-key="${selectorValue(state.lastFocusedPosterKey)}"]`;
     } else {
@@ -1297,6 +1299,7 @@ export const LibraryScreen = {
       const picker = String(node.dataset.picker || "");
       const index = Number(node.dataset.optionIndex || 0);
       this.pendingPickerRestore = picker || null;
+      this.focusZone = "content";
       this.controller.setState({
         pickerFocusIndex: index,
         expandedPicker: picker

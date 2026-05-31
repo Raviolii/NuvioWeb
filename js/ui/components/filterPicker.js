@@ -63,6 +63,7 @@ export function renderFilterPicker({
   const chevronClassName = `${classPrefix}-chevron`;
   const shouldRenderMenu = open || closing;
   const canFocusOptions = optionFocusable && open;
+  const shouldHighlightClosingOption = open || closing;
 
   return `
     <div class="${wrapperClassName}">
@@ -82,12 +83,13 @@ export function renderFilterPicker({
       ${shouldRenderMenu ? `
         <div class="${menuClassName}" role="listbox" aria-label="${escapeHtml(title)}" aria-hidden="${open ? "false" : "true"}">
           ${options.map((option, index) => {
+            const isActiveOption = shouldHighlightClosingOption && index === normalizedFocusIndex;
             const optionClassName = joinClasses(
               `${classPrefix}-option`,
               canFocusOptions ? "focusable" : "",
               optionExtraClass,
-              open && index === normalizedFocusIndex ? focusedOptionClass : "",
-              open && index === normalizedFocusIndex ? targetOptionClass : "",
+              isActiveOption ? focusedOptionClass : "",
+              isActiveOption ? targetOptionClass : "",
               index === normalizedSelectedIndex ? selectedOptionClass : ""
             );
             return `

@@ -328,6 +328,12 @@ export class LibraryController {
       selectedYear
     };
     this.state.visibleItems = sortForState(this.state.allItems, this.state);
+    const hasFocusedPoster = this.state.visibleItems.some((item) => `${item.type}:${item.id}` === this.state.lastFocusedPosterKey);
+    if (!hasFocusedPoster) {
+      const firstItem = this.state.visibleItems[0] || null;
+      this.state.lastFocusedPosterKey = firstItem ? `${firstItem.type}:${firstItem.id}` : null;
+      persistedPosterFocusKey = this.state.lastFocusedPosterKey;
+    }
     this.onChange(this.getState());
   }
 
