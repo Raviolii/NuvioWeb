@@ -10572,6 +10572,636 @@ button:focus-visible {
   padding: 4px 0 0;
 }
 
+/* Android TV player port: dp/sp values use the repo-wide x2 web conversion for a 1920px TV canvas. */
+#playerUiRoot {
+  --player-controls-x: min(3.33vw, 64px); /* ATV 32dp -> 64px */
+  --player-controls-y: min(2.5vw, 48px); /* ATV 24dp -> 48px */
+  --player-control-size: min(5vw, 96px); /* ATV 48dp -> 96px */
+  --player-control-icon: min(2.5vw, 48px); /* ATV 24dp -> 48px */
+  --player-panel-width: min(54.17vw, 1040px); /* ATV 520dp -> 1040px */
+  --player-panel-padding: min(2.5vw, 48px); /* ATV 24dp -> 48px */
+  --player-overlay-left: min(5.42vw, 104px); /* ATV 52dp -> 104px */
+  --player-overlay-bottom: min(7.92vw, 152px); /* ATV 76dp -> 152px */
+  --player-atv-primary: #9e9e9e;
+  --player-atv-text-primary: #ffffff;
+  --player-atv-text-secondary: #b3b3b3;
+  --player-atv-text-tertiary: #808080;
+  --player-atv-border: #333333;
+  --player-background-elevated: #1a1a1a; /* ATV default BackgroundElevated */
+  --player-background-card: #242424; /* ATV default BackgroundCard */
+  --player-surface-variant: #2d2d2d; /* ATV SurfaceVariant */
+}
+
+.player-controls-top {
+  padding: min(0.21vw, 4px); /* ATV 2dp -> 4px */
+}
+
+.player-clock {
+  font-size: min(1.354vw, 26px); /* ATV 13sp -> 26px */
+  line-height: 1.2;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.96);
+}
+
+.player-ends-at {
+  margin-top: 0;
+  font-size: min(1.042vw, 20px); /* ATV 10sp -> 20px */
+  line-height: 1.2;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.player-loading-overlay {
+  transition: opacity 250ms ease;
+}
+
+.player-loading-overlay.hidden {
+  transition-duration: 200ms;
+}
+
+.player-loading-gradient {
+  background: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.3) 0%,
+    rgba(0, 0, 0, 0.6) 35%,
+    rgba(0, 0, 0, 0.8) 70%,
+    rgba(0, 0, 0, 0.9) 100%
+  );
+}
+
+.player-loading-logo {
+  width: min(33.33vw, 640px); /* ATV 320dp -> 640px */
+  max-width: min(33.33vw, 640px);
+  max-height: min(18.75vw, 360px); /* ATV 180dp -> 360px */
+}
+
+.player-controls-gradient-top {
+  height: min(15.625vw, 300px); /* ATV 150dp -> 300px */
+}
+
+.player-controls-gradient-bottom {
+  height: min(20.83vw, 400px); /* ATV 200dp -> 400px */
+}
+
+.player-title,
+.player-dialog-title,
+.player-sources-title,
+.player-episode-panel-title {
+  font-size: min(2.92vw, 56px); /* headlineSmall/Medium visual match */
+  line-height: 1.18;
+  color: var(--player-atv-text-primary);
+}
+
+.player-subtitle,
+.player-time-label,
+.player-source-current-meta,
+.player-episode-panel-hint {
+  font-size: min(1.67vw, 32px); /* ATV bodyLarge -> 32px */
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.player-meta-tertiary,
+.player-dialog-item-sub,
+.player-source-desc,
+.player-episode-item-subtitle,
+.player-episode-date {
+  font-size: min(1.35vw, 26px); /* ATV bodySmall -> 26px */
+  line-height: 1.3;
+  color: var(--player-atv-text-secondary);
+}
+
+.player-progress-track {
+  height: min(0.625vw, 12px); /* ATV 6dp -> 12px */
+  border-radius: min(0.3125vw, 6px);
+  transition: height 120ms ease, background-color 120ms ease;
+}
+
+.player-progress-shell.focused .player-progress-track {
+  height: min(1.04vw, 20px); /* ATV focused 10dp -> 20px */
+}
+
+.player-controls-row {
+  margin-top: min(1.67vw, 32px); /* ATV 16dp -> 32px */
+}
+
+.player-control-buttons,
+.player-controls-row .player-control-buttons {
+  gap: min(0.42vw, 8px); /* ATV 4dp -> 8px */
+}
+
+.player-control-btn {
+  transition: background-color 180ms cubic-bezier(0.4, 0, 0.2, 1), color 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.player-control-btn:not(.focused) .player-control-icon:not(.player-control-icon-mask) {
+  width: var(--player-control-icon);
+  height: var(--player-control-icon);
+}
+
+.player-control-btn:not(.focused):not(.is-primary) .player-control-icon:not(.player-control-icon-mask) {
+  filter: brightness(0) invert(1);
+}
+
+.player-modal-backdrop {
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.88) 0%, rgba(0, 0, 0, 0) 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.6) 0%, rgba(0, 0, 0, 0.4) 30%, rgba(0, 0, 0, 0.2) 60%, rgba(0, 0, 0, 0) 100%),
+    rgba(0, 0, 0, 0.34);
+  transition: opacity 250ms ease;
+}
+
+.player-modal-backdrop.hidden {
+  transition-duration: 200ms;
+}
+
+.player-subtitle-modal,
+.player-audio-modal {
+  left: min(4.58vw, 88px); /* ATV scaffold start 44dp -> 88px */
+  bottom: min(6.67vw, 128px); /* ATV audio scaffold bottom 64dp -> 128px */
+  width: min(75.42vw, 1448px); /* ATV 724dp -> 1448px */
+  max-height: calc(100vh - min(9.58vw, 184px));
+}
+
+.player-subtitle-modal {
+  bottom: min(2.92vw, 56px); /* ATV subtitle scaffold bottom 28dp -> 56px */
+}
+
+.player-speed-modal {
+  left: min(4.58vw, 88px); /* ATV 44dp -> 88px */
+  bottom: min(6.67vw, 128px); /* ATV 64dp -> 128px */
+  width: min(31.25vw, 600px); /* ATV 300dp -> 600px */
+  padding: min(2.5vw, 48px); /* ATV 24dp -> 48px */
+  border-radius: min(1.67vw, 32px);
+}
+
+.player-subtitle-overlay-grid {
+  grid-template-columns: min(20.83vw, 400px) min(31.25vw, 600px) min(29.17vw, 560px); /* ATV 200/300/280dp */
+  gap: min(1.46vw, 28px); /* ATV 14dp -> 28px */
+}
+
+.player-dialog-title {
+  margin-bottom: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+}
+
+.player-subtitle-rail {
+  gap: min(0.42vw, 8px); /* ATV 4dp -> 8px */
+  max-height: min(75vw, 1440px); /* ATV 720dp -> 1440px */
+  padding: min(0.83vw, 16px) 0;
+}
+
+.player-subtitle-rail::before {
+  font-size: min(1.46vw, 28px); /* ATV labelLarge */
+  line-height: 1.2;
+  color: var(--player-atv-text-tertiary);
+}
+
+.player-subtitle-language-rail .player-dialog-item {
+  padding: min(0.83vw, 16px) min(1.04vw, 20px); /* ATV 10dp/8dp */
+}
+
+.player-subtitle-options-rail .player-dialog-item {
+  padding: min(0.94vw, 18px) min(1.25vw, 24px); /* ATV 12dp/9dp */
+}
+
+.player-subtitle-style-rail {
+  gap: min(1.04vw, 20px); /* ATV 10dp -> 20px */
+  padding-top: 0;
+}
+
+.player-dialog-item {
+  min-height: auto;
+  padding: min(0.83vw, 16px) min(1.25vw, 24px); /* ATV card padding */
+  border-radius: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+  border-width: min(0.21vw, 4px); /* ATV 2dp -> 4px */
+  color: var(--player-atv-text-primary);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.player-dialog-item.focused:not(.selected),
+.player-audio-control-card.focused:not(.selected) {
+  border-color: var(--player-focus-ring);
+  background: transparent;
+}
+
+.player-dialog-item.selected,
+.player-audio-control-card.selected,
+.player-subtitle-modal .player-dialog-item.selected,
+.player-subtitle-modal .player-dialog-item.selected.focused {
+  background: var(--player-secondary);
+  border-color: transparent;
+  color: var(--player-on-secondary);
+}
+
+.player-subtitle-modal .player-dialog-item.focused:not(.selected) {
+  background: transparent;
+  border-color: var(--player-focus-ring);
+  color: var(--player-atv-text-primary);
+}
+
+.player-dialog-item.selected .player-dialog-item-main,
+.player-dialog-item.selected .player-dialog-item-sub,
+.player-dialog-item.selected .player-dialog-item-check,
+.player-subtitle-modal .player-dialog-item.selected .player-dialog-item-main,
+.player-subtitle-modal .player-dialog-item.selected .player-dialog-item-sub,
+.player-subtitle-modal .player-dialog-item.selected .player-dialog-item-check,
+.player-subtitle-modal .player-dialog-item.selected.focused .player-dialog-item-main,
+.player-subtitle-modal .player-dialog-item.selected.focused .player-dialog-item-sub,
+.player-subtitle-modal .player-dialog-item.selected.focused .player-dialog-item-check,
+.player-audio-control-card.selected .player-dialog-item-main,
+.player-audio-control-card.selected .player-dialog-item-sub {
+  color: currentColor;
+}
+
+.player-dialog-item-main,
+.player-source-title,
+.player-episode-item-title,
+.player-audio-control-value {
+  font-size: min(1.67vw, 32px); /* ATV titleMedium/bodyLarge -> 32px */
+  line-height: 1.2;
+}
+
+.player-dialog-item-check {
+  font-size: min(2.5vw, 48px);
+}
+
+.player-dialog-step {
+  width: min(5.83vw, 112px); /* ATV 56dp -> 112px */
+  min-width: min(5.83vw, 112px);
+  height: min(4.17vw, 80px); /* ATV subtitle step 40dp -> 80px */
+  border-radius: min(1.25vw, 24px);
+  border: min(0.21vw, 4px) solid rgba(255, 255, 255, 0.18);
+  font-size: min(2.92vw, 56px);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.player-audio-modal .player-dialog-step {
+  width: min(5.83vw, 112px); /* ATV audio StepCard 56dp -> 112px */
+  height: auto;
+  padding: min(0.625vw, 12px) 0; /* ATV 6dp -> 12px */
+  background: transparent;
+}
+
+.player-dialog-step.focused:not(.disabled) {
+  border-color: var(--player-focus-ring);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.player-dialog-step.disabled {
+  opacity: 0.35;
+}
+
+.player-audio-overlay-grid {
+  display: grid;
+  grid-template-columns: min(46.25vw, 888px) min(27.92vw, 536px); /* ATV 444/268dp */
+  gap: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+  align-items: end;
+}
+
+.player-audio-track-list {
+  width: min(46.25vw, 888px); /* ATV 444dp -> 888px */
+  max-height: min(64.58vw, 1240px); /* ATV 620dp -> 1240px */
+  gap: min(0.625vw, 12px);
+  padding: min(0.83vw, 16px) 0;
+}
+
+.player-audio-track-list .player-dialog-item {
+  padding: min(0.83vw, 16px) min(1.25vw, 24px); /* ATV 12dp/8dp */
+}
+
+.player-audio-track-list .player-dialog-item.focused {
+  transform: none; /* ATV focusedScale 1f */
+}
+
+.player-audio-controls-list {
+  width: min(27.92vw, 536px); /* ATV 268dp -> 536px */
+  display: flex;
+  flex-direction: column;
+  gap: min(1.04vw, 20px); /* ATV 10dp -> 20px */
+}
+
+.player-audio-control-card {
+  padding: min(0.42vw, 8px) 0; /* ATV control section vertical rhythm */
+  border-radius: min(1.25vw, 24px);
+  border: min(0.21vw, 4px) solid transparent;
+  background: transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.player-audio-toggle {
+  padding: min(0.73vw, 14px) min(1.04vw, 20px); /* ATV persist 7/10dp -> 14/20px */
+}
+
+.player-audio-control-card > .player-audio-control-title,
+.player-audio-control-card > .player-audio-control-value,
+.player-audio-control-card > .player-audio-step-row,
+.player-audio-control-card > .player-dialog-item-sub {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.player-audio-control-card.focused {
+  border-color: var(--player-focus-ring);
+  background: transparent;
+}
+
+.player-audio-control-card.selected {
+  background: var(--player-secondary);
+  color: var(--player-on-secondary);
+}
+
+.player-audio-control-title {
+  font-size: min(1.46vw, 28px);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.player-audio-control-value {
+  margin-top: min(0.42vw, 8px); /* ATV control text gap 4dp -> 8px */
+}
+
+.player-audio-step-row {
+  display: flex;
+  gap: min(0.625vw, 12px); /* ATV 6dp -> 12px */
+  margin: min(0.42vw, 8px) 0;
+}
+
+.player-sources-panel,
+.player-episode-panel {
+  width: var(--player-panel-width);
+  padding: var(--player-panel-padding);
+  border-radius: min(1.67vw, 32px) 0 0 min(1.67vw, 32px); /* ATV 16dp -> 32px */
+  transform: translateX(0);
+  transition: opacity 120ms ease, transform 220ms ease;
+}
+
+.player-sources-panel.hidden,
+.player-episode-panel.hidden {
+  transform: translateX(100%);
+}
+
+.player-sources-header {
+  gap: min(1.46vw, 28px);
+}
+
+.player-sources-actions {
+  gap: min(0.83vw, 16px);
+}
+
+.player-sources-top-btn {
+  height: min(4.17vw, 80px);
+  padding: 0 min(1.67vw, 32px);
+  border-radius: min(1.25vw, 24px);
+  background: var(--player-background-card);
+  color: var(--player-atv-text-primary);
+  font-size: min(1.46vw, 28px);
+}
+
+.player-sources-top-btn.focused {
+  background: var(--player-secondary);
+  color: var(--player-on-secondary);
+  box-shadow: 0 0 0 min(0.21vw, 4px) var(--player-focus-ring);
+}
+
+.player-sources-filters {
+  margin-top: min(1.67vw, 32px);
+  gap: min(1.67vw, 32px); /* ATV AddonFilterChips spacedBy 16dp -> 32px */
+  padding: min(0.42vw, 8px) min(0.83vw, 16px); /* ATV 4/8dp */
+}
+
+.player-sources-filter {
+  height: min(4.58vw, 88px);
+  padding: 0 min(2.08vw, 40px); /* ATV 20dp -> 40px */
+  border: min(0.104vw, 2px) solid var(--player-atv-border); /* ATV 1dp -> 2px */
+  background: var(--player-background-card);
+  color: var(--player-atv-text-secondary);
+  font-size: min(1.46vw, 28px);
+}
+
+.player-sources-filter.selected,
+.player-sources-filter.focused {
+  background: var(--player-secondary);
+  color: var(--player-on-secondary);
+}
+
+.player-sources-filter.selected {
+  border-color: var(--player-atv-primary);
+}
+
+.player-sources-filter.focused {
+  border-color: var(--player-focus-ring);
+  box-shadow: none;
+}
+
+.player-sources-list {
+  margin-top: min(1.67vw, 32px);
+  padding: min(1.46vw, 28px) min(0.83vw, 16px) min(0.83vw, 16px);
+}
+
+.player-source-card {
+  padding: min(1.67vw, 32px); /* ATV 16dp -> 32px */
+  margin-bottom: min(0.83vw, 16px);
+  border-radius: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+  border-width: min(0.104vw, 2px); /* ATV 1dp -> 2px */
+  background: var(--player-background-elevated);
+  border-color: transparent;
+  gap: min(1.25vw, 24px);
+}
+
+.player-source-side {
+  align-items: flex-end;
+}
+
+.player-source-logo {
+  width: min(3.33vw, 64px); /* ATV 32dp -> 64px */
+  height: min(3.33vw, 64px);
+  object-fit: contain;
+  border-radius: min(0.42vw, 8px); /* ATV 4dp -> 8px */
+  margin-bottom: min(0.42vw, 8px); /* ATV spacer 4dp -> 8px */
+}
+
+.player-source-card.selected {
+  border-color: rgba(158, 158, 158, 0.65); /* ATV Primary alpha .65 */
+}
+
+.player-source-card.focused,
+.player-source-card.selected.focused {
+  border-width: min(0.21vw, 4px); /* ATV focused 2dp -> 4px */
+  border-color: var(--player-focus-ring);
+  background: var(--player-background-elevated);
+  transform: scale(1.04); /* ATV focusedScale 1.04 */
+}
+
+.player-source-tags {
+  gap: min(0.83vw, 16px);
+}
+
+.player-source-tag {
+  height: min(2.5vw, 48px);
+  padding: 0 min(1.04vw, 20px);
+  border-radius: min(0.83vw, 16px);
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--player-atv-text-primary);
+  font-size: min(1.35vw, 26px);
+}
+
+.player-source-addon {
+  color: var(--player-atv-text-tertiary);
+}
+
+.player-source-playing {
+  background: rgba(158, 158, 158, 0.2); /* ATV Primary alpha .2 */
+  color: var(--player-atv-primary);
+}
+
+.player-episode-panel {
+  z-index: 37;
+  background: var(--player-background-elevated);
+}
+
+.player-episode-panel-hint {
+  margin: min(1.67vw, 32px) 0 min(1.67vw, 32px); /* ATV 16dp spacers -> 32px */
+}
+
+.player-episode-item {
+  display: flex;
+  align-items: flex-start;
+  gap: min(1.46vw, 28px); /* ATV 14dp -> 28px */
+  padding: min(1.04vw, 20px); /* ATV 10dp -> 20px */
+  margin-bottom: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+  border-radius: min(1.67vw, 32px); /* ATV 16dp -> 32px */
+  border-width: min(0.21vw, 4px); /* ATV 2dp -> 4px */
+  background: var(--player-background-card);
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.player-episode-item.selected {
+  background: var(--player-focus-background);
+  border-color: var(--player-focus-ring);
+  transform: scale(1.01);
+}
+
+.player-episode-thumb-wrap {
+  position: relative;
+  width: min(13.54vw, 260px); /* ATV 130dp -> 260px */
+  min-width: min(13.54vw, 260px);
+  height: min(9.375vw, 180px); /* ATV 90dp -> 180px */
+  border-radius: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+  overflow: hidden;
+  background: var(--player-surface-variant);
+}
+
+.player-episode-thumb,
+.player-episode-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.player-episode-code {
+  position: absolute;
+  left: min(0.83vw, 16px);
+  bottom: min(0.83vw, 16px);
+  padding: min(0.42vw, 8px) min(0.83vw, 16px);
+  border-radius: min(0.625vw, 12px);
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: min(1.35vw, 26px);
+  font-weight: 500;
+}
+
+.player-episode-current {
+  position: absolute;
+  right: min(0.625vw, 12px);
+  top: min(0.625vw, 12px);
+  width: min(2.29vw, 44px); /* ATV 22dp -> 44px */
+  height: min(2.29vw, 44px);
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--player-atv-primary);
+  color: #fff;
+  font-size: min(1.46vw, 28px);
+}
+
+.player-episode-copy {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: min(0.42vw, 8px);
+}
+
+.player-skip-intro {
+  left: min(3.33vw, 64px); /* ATV 32dp -> 64px */
+  bottom: min(3.125vw, 60px); /* ATV 30dp -> 60px */
+  transition: bottom 180ms ease, opacity 180ms ease;
+}
+
+.player-skip-intro.is-raised {
+  bottom: min(12.71vw, 244px); /* ATV 122dp -> 244px */
+}
+
+.player-skip-intro-btn {
+  min-height: 0;
+  min-width: 0;
+  padding: min(1.25vw, 24px) min(1.875vw, 36px); /* ATV 12/18dp */
+  border: none;
+  border-radius: min(1.25vw, 24px); /* ATV 12dp -> 24px */
+  background: rgba(30, 30, 30, 0.85); /* ATV #1E1E1E alpha .85 */
+  color: #fff;
+  box-shadow: none;
+}
+
+.player-skip-intro-btn.is-selected,
+.player-skip-intro:focus-within .player-skip-intro-btn {
+  background: var(--player-secondary);
+  color: var(--player-on-secondary);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.player-skip-intro-label {
+  font-size: min(1.46vw, 28px); /* ATV 14sp -> 28px */
+}
+
+.player-aspect-toast {
+  top: min(8.33vw, 160px); /* ATV 80dp -> 160px */
+  min-height: min(6.67vw, 128px);
+  padding: 0 min(3.33vw, 64px);
+  font-size: min(2.92vw, 56px);
+  transition: opacity 200ms ease;
+}
+
+@media (max-width: 1280px), (max-height: 760px) {
+  #playerUiRoot {
+    --player-panel-width: min(60vw, 760px);
+    --player-overlay-left: 44px;
+    --player-overlay-bottom: 64px;
+    --player-control-size: 48px;
+    --player-control-icon: 24px;
+  }
+
+  .player-subtitle-modal,
+  .player-audio-modal {
+    width: min(92vw, 724px);
+  }
+
+  .player-subtitle-overlay-grid {
+    grid-template-columns: 200px 300px 280px;
+  }
+
+  .player-audio-overlay-grid {
+    grid-template-columns: 444px 268px;
+  }
+
+  .player-audio-track-list {
+    width: 444px;
+  }
+}
+
 .series-detail-shell {
   position: relative;
   width: 100vw;

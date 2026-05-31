@@ -704,6 +704,27 @@ function buildEpisodePanelHint() {
   return `UP/DOWN ${t("discover_select_catalog", {}, "Select")} | OK ${t("episodes_play", {}, "Play")} | BACK ${t("episodes_panel_close", {}, "Close")}`;
 }
 
+function episodeDisplayCode(episode = {}) {
+  const season = Number(episode?.season);
+  const episodeNumber = Number(episode?.episode);
+  if (!Number.isFinite(season) || !Number.isFinite(episodeNumber)) {
+    return "";
+  }
+  return `S${season} E${episodeNumber}`;
+}
+
+function episodeThumbnailUrl(episode = {}) {
+  return cleanDisplayText(
+    episode?.thumbnail
+    || episode?.thumbnailUrl
+    || episode?.still
+    || episode?.stillUrl
+    || episode?.poster
+    || episode?.image
+    || ""
+  );
+}
+
 function qualityLabelFromText(value) {
   const text = String(value || "").toLowerCase();
   if (text.includes("2160") || text.includes("4k")) return "2160p";
@@ -7426,13 +7447,41 @@ export const PlayerScreen = {
     }
 
     const entries = this.getAudioEntries();
+    const audioControls = [
+      {
+        id: "amplification",
+        title: t("audio_mix_label", {}, "Audio boost"),
+        value: `${Math.round(Number(this.audioAmplificationDb || 0))} dB`,
+        helper: this.audioAmplificationAvailable
+          ? t("audio_mix_range", { min: AUDIO_AMPLIFICATION_MIN_DB, max: AUDIO_AMPLIFICATION_MAX_DB }, `Range ${AUDIO_AMPLIFICATION_MIN_DB}-${AUDIO_AMPLIFICATION_MAX_DB} dB`)
+          : t("audio_mix_unavailable", {}, "Unavailable on this device"),
+        enabled: Boolean(this.audioAmplificationAvailable),
+        canDecrease: this.audioAmplificationAvailable && Number(this.audioAmplificationDb || 0) > AUDIO_AMPLIFICATION_MIN_DB,
+        canIncrease: this.audioAmplificationAvailable && Number(this.audioAmplificationDb || 0) < AUDIO_AMPLIFICATION_MAX_DB
+      },
+      {
+        id: "persist",
+        title: this.persistAudioAmplification
+          ? t("audio_mix_persist_on", {}, "Save audio boost: On")
+          : t("audio_mix_persist_off", {}, "Save audio boost: Off"),
+        value: "",
+        helper: t("audio_mix_persist_help", {}, "Remember boost for future playback"),
+        enabled: true,
+        toggle: true
+      }
+    ];
+    this.audioMixFocusIndex = clamp(this.audioMixFocusIndex, 0, audioControls.length - 1);
     if (!entries.length) {
+      this.audioFocusedColumn = "controls";
       const loading = this.embeddedAudioLoading
         || (this.isCurrentSourceAdaptiveManifest() && (this.manifestLoading || this.trackDiscoveryInProgress));
       const emptyMessage = loading ? "Loading audio tracks..." : this.getUnavailableTrackMessage("audio");
       dialog.innerHTML = `
         <div class="player-dialog-title">${escapeHtml(t("audio_dialog_title", {}, "Audio"))}</div>
         <div class="player-dialog-empty">${emptyMessage}</div>
+        <div class="player-audio-controls-list">
+          ${audioControls.map((control, index) => this.renderAudioControlItem(control, index)).join("")}
+        </div>
       `;
       return;
     }
@@ -7440,21 +7489,60 @@ export const PlayerScreen = {
     this.audioDialogIndex = clamp(this.audioDialogIndex, 0, entries.length - 1);
     dialog.innerHTML = `
       <div class="player-dialog-title">${escapeHtml(t("audio_dialog_title", {}, "Audio"))}</div>
-      <div class="player-dialog-list player-audio-track-list">
-        ${entries.map((entry, index) => {
-          const selected = entry.selected;
-          const focused = index === this.audioDialogIndex;
-          return `
-            <div class="player-dialog-item${selected ? " selected" : ""}${focused ? " focused" : ""}">
-              <div class="player-dialog-item-main">${escapeHtml(entry.label || "")}</div>
-              <div class="player-dialog-item-sub">${escapeHtml(entry.secondary || "")}</div>
-              <div class="player-dialog-item-check">${selected ? "&#10003;" : ""}</div>
-            </div>
-          `;
-        }).join("")}
+      <div class="player-audio-overlay-grid">
+        <div class="player-dialog-list player-audio-track-list">
+          ${entries.map((entry, index) => {
+            const selected = entry.selected;
+            const focused = this.audioFocusedColumn === "tracks" && index === this.audioDialogIndex;
+            return `
+              <div class="player-dialog-item${selected ? " selected" : ""}${focused ? " focused" : ""}">
+                <div class="player-dialog-item-main">${escapeHtml(entry.label || "")}</div>
+                <div class="player-dialog-item-sub">${escapeHtml(entry.secondary || "")}</div>
+                <div class="player-dialog-item-check">${selected ? "&#10003;" : ""}</div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+        <div class="player-audio-controls-list">
+          ${audioControls.map((control, index) => this.renderAudioControlItem(control, index)).join("")}
+        </div>
       </div>
     `;
     this.scrollAudioDialogIntoView();
+  },
+
+  renderAudioControlItem(control, index) {
+    const focused = this.audioFocusedColumn === "controls" && index === this.audioMixFocusIndex;
+    if (control.toggle) {
+      return `
+        <div class="player-audio-control-card player-audio-toggle${this.persistAudioAmplification ? " selected" : ""}${focused ? " focused" : ""}">
+          <div class="player-dialog-item-main">${escapeHtml(control.title)}</div>
+          <div class="player-dialog-item-sub">${escapeHtml(control.helper || "")}</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="player-audio-control-card${focused ? " focused" : ""}${!control.enabled ? " disabled" : ""}">
+        <div class="player-audio-control-title">${escapeHtml(control.title)}</div>
+        <div class="player-audio-control-value">${escapeHtml(control.value)}</div>
+        <div class="player-audio-step-row">
+          <button class="player-dialog-step player-dialog-step-minus${focused ? " focused" : ""}${!control.canDecrease ? " disabled" : ""}" type="button" tabindex="-1">&#8722;</button>
+          <button class="player-dialog-step player-dialog-step-plus${focused ? " focused" : ""}${!control.canIncrease ? " disabled" : ""}" type="button" tabindex="-1">&#43;</button>
+        </div>
+        <div class="player-dialog-item-sub">${escapeHtml(control.helper || "")}</div>
+      </div>
+    `;
+  },
+
+  activateAudioControl(direction = 0) {
+    if (this.audioMixFocusIndex === 0) {
+      if (!this.audioAmplificationAvailable) {
+        return;
+      }
+      this.adjustAudioAmplification(direction < 0 ? -1 : 1);
+      return;
+    }
+    this.togglePersistAudioAmplification();
   },
 
   scrollAudioDialogIntoView() {
@@ -7471,28 +7559,59 @@ export const PlayerScreen = {
     const entries = this.getAudioEntries();
     const isNavigationKey = keyCode === 37 || keyCode === 38 || keyCode === 39 || keyCode === 40 || keyCode === 13;
 
-    if (!entries.length) {
-      return isNavigationKey;
+    if (keyCode === 37) {
+      if (this.audioFocusedColumn === "controls") {
+        if (this.audioMixFocusIndex === 0) {
+          this.activateAudioControl(-1);
+        } else if (entries.length) {
+          this.audioFocusedColumn = "tracks";
+          this.renderAudioDialog();
+        }
+      }
+      return true;
     }
 
-    if (keyCode === 37 || keyCode === 39) {
+    if (keyCode === 39) {
+      if (this.audioFocusedColumn === "tracks") {
+        if (!entries.length) {
+          this.audioFocusedColumn = "controls";
+          this.renderAudioDialog();
+          return true;
+        }
+        this.audioFocusedColumn = "controls";
+        this.renderAudioDialog();
+      } else if (this.audioMixFocusIndex === 0) {
+        this.activateAudioControl(1);
+      }
       return true;
     }
 
     if (keyCode === 38) {
-      this.audioDialogIndex = clamp(this.audioDialogIndex - 1, 0, entries.length - 1);
+      if (this.audioFocusedColumn === "tracks") {
+        this.audioDialogIndex = clamp(this.audioDialogIndex - 1, 0, entries.length - 1);
+      } else {
+        this.audioMixFocusIndex = clamp(this.audioMixFocusIndex - 1, 0, 1);
+      }
       this.renderAudioDialog();
       return true;
     }
 
     if (keyCode === 40) {
-      this.audioDialogIndex = clamp(this.audioDialogIndex + 1, 0, entries.length - 1);
+      if (this.audioFocusedColumn === "tracks") {
+        this.audioDialogIndex = clamp(this.audioDialogIndex + 1, 0, entries.length - 1);
+      } else {
+        this.audioMixFocusIndex = clamp(this.audioMixFocusIndex + 1, 0, 1);
+      }
       this.renderAudioDialog();
       return true;
     }
 
     if (keyCode === 13) {
-      this.applyAudioTrack(this.audioDialogIndex);
+      if (this.audioFocusedColumn === "tracks") {
+        this.applyAudioTrack(this.audioDialogIndex);
+      } else {
+        this.activateAudioControl(this.audioMixFocusIndex === 0 ? 1 : 0);
+      }
       return true;
     }
 
@@ -7789,6 +7908,7 @@ export const PlayerScreen = {
                   </div>
                 </div>
                 <div class="player-source-side">
+                  ${stream.addonLogo ? `<img class="player-source-logo" src="${escapeAttribute(stream.addonLogo)}" alt="" />` : ""}
                   <div class="player-source-addon">${escapeHtml(stream.addonName || t("nav_addons", {}, "Addon"))}</div>
                   ${isCurrent ? `<div class="player-source-playing">${escapeHtml(t("sources_playing", {}, "Playing"))}</div>` : ""}
                 </div>
@@ -8165,10 +8285,21 @@ export const PlayerScreen = {
     const cards = this.episodes.slice(0, 80).map((episode, index) => {
       const selected = index === this.episodePanelIndex;
       const selectedClass = selected ? " selected" : "";
+      const current = Number(episode?.season) === Number(this.params?.season) && Number(episode?.episode) === Number(this.params?.episode);
+      const code = episodeDisplayCode(episode);
+      const thumbnail = episodeThumbnailUrl(episode);
       return `
         <div class="player-episode-item${selectedClass}">
-          <div class="player-episode-item-title">S${episode.season}E${episode.episode} ${escapeHtml(episode.title || t("episodes_episode", {}, "Episode"))}</div>
-          <div class="player-episode-item-subtitle">${escapeHtml(episode.overview || "")}</div>
+          <div class="player-episode-thumb-wrap">
+            ${thumbnail ? `<img class="player-episode-thumb" src="${escapeAttribute(thumbnail)}" alt="" />` : `<div class="player-episode-thumb-fallback"></div>`}
+            ${code ? `<div class="player-episode-code">${escapeHtml(code)}</div>` : ""}
+            ${current ? `<div class="player-episode-current">&#10003;</div>` : ""}
+          </div>
+          <div class="player-episode-copy">
+            <div class="player-episode-item-title">${escapeHtml(episode.title || t("episodes_episode", {}, "Episode"))}</div>
+            ${episode.released ? `<div class="player-episode-date">${escapeHtml(episode.released)}</div>` : ""}
+            <div class="player-episode-item-subtitle">${escapeHtml(episode.overview || "")}</div>
+          </div>
         </div>
       `;
     }).join("");
