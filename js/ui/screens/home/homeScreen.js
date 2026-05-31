@@ -71,6 +71,7 @@ const CW_META_TIMEOUT_TV_MS = 4200;
 const CW_NEXT_UP_META_TIMEOUT_MS = 2200;
 const CW_META_RETRY_TIMEOUT_MS = 8000;
 const CW_ENRICHMENT_CACHE_KEY = "homeContinueWatchingEnrichmentCache";
+const HOME_RETURN_FOCUS_STATE_KEY = "homeReturnFocusState";
 const CW_ENRICHMENT_CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const CW_NEXT_UP_NEW_SEASON_UNAIRED_WINDOW_DAYS = 7;
 
@@ -2185,6 +2186,143 @@ export const HomeScreen = {
     };
   },
 
+  captureFocusStateForNode(node) {
+    const layoutMode = String(this.renderedLayoutMode || this.layoutMode || "").toLowerCase();
+    if (!this.container || !layoutMode || !(node instanceof HTMLElement) || !this.container.contains(node)) {
+      return null;
+    }
+    const viewport = layoutMode === "modern"
+      ? this.container.querySelector(".home-modern-rows-viewport")
+      : this.container.querySelector(".home-main");
+    if (!viewport) {
+      return null;
+    }
+
+    const trackStates = Object.fromEntries(
+      Array.from(this.container.querySelectorAll("[data-track-row-key]"))
+        .map((track) => [String(track.dataset.trackRowKey || ""), track.scrollLeft])
+        .filter(([key]) => key)
+    );
+    const section = node.closest("[data-row-key]") || null;
+    const track = node.closest(".home-track, .home-grid-track");
+    const itemIndex = track
+      ? Array.from(track.querySelectorAll(".home-content-card.focusable")).indexOf(node)
+      : -1;
+    const focusKind = node.classList.contains("home-hero-card")
+      ? "hero"
+      : (node.dataset?.action === "resumeProgress"
+        ? "continue"
+        : (node.dataset?.action === "openCatalogSeeAll" ? "seeAll" : "item"));
+
+    return {
+      layoutMode,
+      mainScrollTop: viewport.scrollTop,
+      rowKey: String(section?.dataset?.rowKey || ""),
+      itemIndex,
+      focusKind,
+      trackStates
+    };
+  },
+
+  rememberReturnFocusForNode(node) {
+    const state = this.captureFocusStateForNode(node);
+    if (!state?.layoutMode) {
+      this.persistCurrentFocusState();
+      return;
+    }
+    this.savedFocusStates = {
+      ...(this.savedFocusStates || {}),
+      [state.layoutMode]: state
+    };
+    this.pendingBackFocusState = state;
+    try {
+      globalThis.sessionStorage?.setItem?.(HOME_RETURN_FOCUS_STATE_KEY, JSON.stringify(state));
+    } catch (_) { }
+  },
+
+  readStoredReturnFocusState() {
+    try {
+      const navigationEntry = globalThis.performance?.getEntriesByType?.("navigation")?.[0] || null;
+      if (navigationEntry?.type === "reload") {
+        globalThis.sessionStorage?.removeItem?.(HOME_RETURN_FOCUS_STATE_KEY);
+        return null;
+      }
+      const raw = globalThis.sessionStorage?.getItem?.(HOME_RETURN_FOCUS_STATE_KEY);
+      const parsed = raw ? JSON.parse(raw) : null;
+      return parsed?.layoutMode ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  },
+
+  clearStoredReturnFocusState() {
+    this.pendingBackFocusState = null;
+    try {
+      globalThis.sessionStorage?.removeItem?.(HOME_RETURN_FOCUS_STATE_KEY);
+    } catch (_) { }
+  },
+
+  applyReturnFocusStateNow(focusState) {
+    if (!focusState?.layoutMode || focusState.layoutMode !== this.layoutMode || !this.container) {
+      return false;
+    }
+    const viewport = this.getHomeViewport();
+    if (!viewport) {
+      return false;
+    }
+
+    Object.entries(focusState.trackStates || {}).forEach(([rowKey, scrollLeft]) => {
+      const track = Array.from(this.container.querySelectorAll("[data-track-row-key]"))
+        .find((node) => String(node.dataset.trackRowKey || "") === String(rowKey || ""));
+      if (track) {
+        track.scrollLeft = Number(scrollLeft || 0);
+      }
+    });
+
+    const rowSection = focusState.rowKey
+      ? Array.from(this.container.querySelectorAll("[data-row-key]"))
+        .find((node) => String(node.dataset.rowKey || "") === String(focusState.rowKey || ""))
+      : null;
+    const track = rowSection?.querySelector?.(".home-track, .home-grid-track") || null;
+    const nodes = Array.from(track?.querySelectorAll(".home-content-card.focusable") || []);
+    const target = nodes[focusState.itemIndex] || nodes[0] || null;
+    if (!target) {
+      return false;
+    }
+
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, Number(focusState.mainScrollTop || 0)));
+    this.container.querySelectorAll(".focusable.focused").forEach((node) => node.classList.remove("focused"));
+    target.classList.add("focused");
+    this.focusWithoutAutoScroll(target, { suppressDelegatedFocus: true });
+    viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, Number(focusState.mainScrollTop || 0)));
+    this.lastMainFocus = target;
+    this.rememberMainRowFocus(target);
+    this.syncFocusedCollectionCardState();
+    this.scheduleModernHeroUpdate(target);
+    this.scheduleFocusedPosterFlow(target);
+    return true;
+  },
+
+  scheduleReturnFocusRestore() {
+    const focusState = this.pendingBackFocusState || this.readStoredReturnFocusState();
+    if (!focusState?.layoutMode) {
+      return;
+    }
+    const restore = () => {
+      if (Router.getCurrent() !== "home") {
+        return;
+      }
+      if (this.applyReturnFocusStateNow(focusState)) {
+        this.clearStoredReturnFocusState();
+      }
+    };
+    requestAnimationFrame(() => {
+      restore();
+      setTimeout(restore, 180);
+    });
+  },
+
   restoreFocusState(state = null) {
     const focusState = state?.layoutMode === this.layoutMode
       ? state
@@ -2211,24 +2349,28 @@ export const HomeScreen = {
     }
 
     Object.entries(focusState.trackStates || {}).forEach(([rowKey, scrollLeft]) => {
-      const track = this.container.querySelector(`[data-track-row-key="${rowKey}"]`);
+      const track = Array.from(this.container.querySelectorAll("[data-track-row-key]"))
+        .find((node) => String(node.dataset.trackRowKey || "") === String(rowKey || ""));
       if (track) {
         track.scrollLeft = Number(scrollLeft || 0);
       }
     });
 
     const rowSection = focusState.rowKey
-      ? this.container.querySelector(`[data-row-key="${focusState.rowKey}"]`)
+      ? Array.from(this.container.querySelectorAll("[data-row-key]"))
+        .find((node) => String(node.dataset.rowKey || "") === String(focusState.rowKey || ""))
       : null;
     const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, Number(focusState.mainScrollTop || 0)));
 
     const targetTrack = rowSection?.querySelector?.(".home-track") || null;
     const targetNodes = Array.from(targetTrack?.querySelectorAll(".home-content-card.focusable") || []);
-    const fallback = this.container.querySelector(".home-main .home-continue-card.focusable, .home-main .home-poster-card.focusable");
+    const fallback = this.isRestoringFocusFromBack
+      ? this.syncMainFocusToViewport({ suppressFlows: true })
+      : this.container.querySelector(".home-main .home-continue-card.focusable, .home-main .home-poster-card.focusable");
     const target = targetNodes[focusState.itemIndex] || targetNodes[0] || fallback;
     if (!target) {
-      return false;
+      return this.isRestoringFocusFromBack;
     }
 
     this.container.querySelectorAll(".focusable.focused").forEach((node) => node.classList.remove("focused"));
@@ -2237,7 +2379,9 @@ export const HomeScreen = {
     this.syncFocusedCollectionCardState();
     this.lastMainFocus = target;
     this.rememberMainRowFocus(target);
-    this.ensureMainVerticalVisibility(target, "down");
+    if (!this.isRestoringFocusFromBack) {
+      this.ensureMainVerticalVisibility(target, "down");
+    }
     this.scheduleModernHeroUpdate(target);
     this.scheduleFocusedPosterFlow(target);
     return true;
@@ -2254,7 +2398,8 @@ export const HomeScreen = {
     }
 
     Object.entries(focusState.trackStates || {}).forEach(([rowKey, scrollLeft]) => {
-      const track = this.container.querySelector(`[data-track-row-key="${rowKey}"]`);
+      const track = Array.from(this.container.querySelectorAll("[data-track-row-key]"))
+        .find((node) => String(node.dataset.trackRowKey || "") === String(rowKey || ""));
       if (track) {
         track.scrollLeft = Number(scrollLeft || 0);
       }
@@ -2267,16 +2412,19 @@ export const HomeScreen = {
     if (focusState.focusKind === "hero") {
       target = this.container.querySelector(".home-hero-card.focusable");
     } else if (focusState.rowKey) {
-      const rowSection = this.container.querySelector(`[data-row-key="${focusState.rowKey}"]`);
+      const rowSection = Array.from(this.container.querySelectorAll("[data-row-key]"))
+        .find((node) => String(node.dataset.rowKey || "") === String(focusState.rowKey || ""));
       const track = rowSection?.querySelector?.(".home-track") || rowSection?.querySelector?.(".home-grid-track") || null;
       const rowNodes = Array.from(track?.querySelectorAll(".home-content-card.focusable") || []);
       target = rowNodes[focusState.itemIndex] || rowNodes[0] || null;
     }
 
-    const fallback = this.container.querySelector(this.getInitialFocusSelector());
+    const fallback = this.isRestoringFocusFromBack
+      ? this.syncMainFocusToViewport({ suppressFlows: true })
+      : this.container.querySelector(this.getInitialFocusSelector());
     target = target || fallback;
     if (!target) {
-      return false;
+      return this.isRestoringFocusFromBack;
     }
 
     this.container.querySelectorAll(".focusable.focused").forEach((node) => node.classList.remove("focused"));
@@ -2285,10 +2433,12 @@ export const HomeScreen = {
     this.syncFocusedCollectionCardState();
     this.lastMainFocus = target;
     this.rememberMainRowFocus(target);
-    if (target.closest(".home-track, .home-grid-track")) {
+    if (!this.isRestoringFocusFromBack && target.closest(".home-track, .home-grid-track")) {
       this.ensureTrackHorizontalVisibility(target);
     }
-    this.ensureMainVerticalVisibility(target);
+    if (!this.isRestoringFocusFromBack) {
+      this.ensureMainVerticalVisibility(target);
+    }
     return true;
   },
 
@@ -5826,11 +5976,21 @@ export const HomeScreen = {
     this.cancelPendingContinueWatchingEnter();
     this.forceInitialContinueWatchingFocus = false;
     this.continueWatchingLoading = false;
-    this.isRestoringFocusFromBack = Boolean(navigationContext?.isBackNavigation);
+    const returnFocusState = this.pendingBackFocusState || this.readStoredReturnFocusState();
+    if (returnFocusState?.layoutMode) {
+      this.pendingBackFocusState = returnFocusState;
+    }
+    this.isRestoringFocusFromBack = Boolean(navigationContext?.isBackNavigation || returnFocusState?.layoutMode);
     if (navigationContext?.restoredState?.layoutMode) {
       this.savedFocusStates = {
         ...(this.savedFocusStates || {}),
         [navigationContext.restoredState.layoutMode]: navigationContext.restoredState
+      };
+    }
+    if (returnFocusState?.layoutMode) {
+      this.savedFocusStates = {
+        ...(this.savedFocusStates || {}),
+        [returnFocusState.layoutMode]: returnFocusState
       };
     }
     const activeProfileId = String(ProfileManager.getActiveProfileId() || "");
@@ -5842,6 +6002,12 @@ export const HomeScreen = {
       this.hasAppliedInitialContinueWatchingFocus = false;
       this.sidebarProfile = null;
       this.savedFocusStates = {};
+    }
+    if (returnFocusState?.layoutMode) {
+      this.savedFocusStates = {
+        ...(this.savedFocusStates || {}),
+        [returnFocusState.layoutMode]: returnFocusState
+      };
     }
 
     if (this.hasLoadedOnce && Array.isArray(this.rows) && this.rows.length) {
@@ -6581,6 +6747,7 @@ export const HomeScreen = {
     this.renderedLayoutMode = this.layoutMode;
     this.ensureHomeTruncationObservers();
     this.scheduleHomeTruncationUpdate();
+    this.scheduleReturnFocusRestore();
   },
 
   teardownGridStickyHeader() {
@@ -7113,6 +7280,7 @@ export const HomeScreen = {
     if (!itemId) {
       return;
     }
+    this.rememberReturnFocusForNode(node);
     Router.navigate("detail", {
       itemId,
       itemType: node.dataset.itemType || "movie",
@@ -7127,6 +7295,7 @@ export const HomeScreen = {
     if (!collectionId || !folderId) {
       return;
     }
+    this.rememberReturnFocusForNode(node);
     Router.navigate("folderDetail", {
       collectionId,
       folderId,
@@ -7138,6 +7307,7 @@ export const HomeScreen = {
     if (!node) {
       return;
     }
+    this.rememberReturnFocusForNode(node);
     const seeAllId = String(node.dataset.seeAllId || "");
     const mapped = this.catalogSeeAllMap?.get?.(seeAllId) || null;
     if (mapped) {
