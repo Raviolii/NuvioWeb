@@ -8,6 +8,14 @@ on:
       tag:
         description: Release tag to build platform artifacts for
         required: true
+      rebuild_tizen:
+        description: Rebuild hosted Tizen artifacts instead of reusing the previous release asset
+        required: false
+        default: "false"
+      rebuild_installer:
+        description: Rebuild desktop installer artifacts instead of reusing the previous release assets
+        required: false
+        default: "false"
 
 jobs:
   resolve-release-payload:
@@ -16,14 +24,30 @@ jobs:
       contents: read
     outputs:
       tag: ${{ steps.payload.outputs.tag }}
+      rebuild_tizen: ${{ steps.payload.outputs.rebuild_tizen }}
+      rebuild_installer: ${{ steps.payload.outputs.rebuild_installer }}
     steps:
       - name: Resolve release payload
         id: payload
+        env:
+          RELEASE_BODY: ${{ github.event.release.body || '' }}
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
             echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            if printf '%s' "$RELEASE_BODY" | grep -qi '\[rebuild-tizen\]'; then
+              echo "rebuild_tizen=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "rebuild_tizen=false" >> "$GITHUB_OUTPUT"
+            fi
+            if printf '%s' "$RELEASE_BODY" | grep -qi '\[rebuild-installer\]'; then
+              echo "rebuild_installer=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "rebuild_installer=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "rebuild_tizen=${{ inputs.rebuild_tizen || 'false' }}" >> "$GITHUB_OUTPUT"
+            echo "rebuild_installer=${{ inputs.rebuild_installer || 'false' }}" >> "$GITHUB_OUTPUT"
           fi
 
   build-webos-release:
@@ -137,12 +161,14 @@ jobs:
           GH_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}
           TARGET_REPO: ${{ vars.TIZEN_REPO }}
           TAG_NAME: ${{ needs.resolve-release-payload.outputs.tag }}
+          REBUILD_TIZEN: ${{ needs.resolve-release-payload.outputs.rebuild_tizen }}
           SOURCE_REPO: ${{ github.repository }}
         run: |
           gh api --method POST "repos/$TARGET_REPO/dispatches" \
             -f event_type=build-release \
             -F client_payload[source_repo]="$SOURCE_REPO" \
-            -F client_payload[tag]="$TAG_NAME"
+            -F client_payload[tag]="$TAG_NAME" \
+            -F client_payload[rebuild_tizen]="$REBUILD_TIZEN"
 
   dispatch-installer-build:
     runs-on: ubuntu-latest
@@ -156,9 +182,11 @@ jobs:
           GH_TOKEN: ${{ secrets.REPO_DISPATCH_TOKEN }}
           TARGET_REPO: ${{ vars.INSTALLER_REPO }}
           TAG_NAME: ${{ needs.resolve-release-payload.outputs.tag }}
+          REBUILD_INSTALLER: ${{ needs.resolve-release-payload.outputs.rebuild_installer }}
           SOURCE_REPO: ${{ github.repository }}
         run: |
           gh api --method POST "repos/$TARGET_REPO/dispatches" \
             -f event_type=build-release \
             -F client_payload[source_repo]="$SOURCE_REPO" \
-            -F client_payload[tag]="$TAG_NAME"
+            -F client_payload[tag]="$TAG_NAME" \
+            -F client_payload[rebuild_installer]="$REBUILD_INSTALLER"
