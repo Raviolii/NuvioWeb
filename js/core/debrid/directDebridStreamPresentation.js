@@ -685,7 +685,24 @@ function formatManagedStream(stream = {}, fact, settings = DebridSettingsStore.g
     description: description || stream.description || stream.title || null,
     addonName: stream.addonName || null,
     addonLogo: stream.addonLogo ?? null,
-    debridProviderName: provider?.displayName || DebridProviders.displayName(providerId)
+    debridProviderName: provider?.displayName || DebridProviders.displayName(providerId),
+    streamPresentation: {
+      resolution: values["stream.resolution"] || null,
+      quality: values["stream.quality"] || null,
+      visualTags: values["stream.visualTags"] || [],
+      encode: values["stream.encode"] || null,
+      audioTags: values["stream.audioTags"] || [],
+      audioChannels: values["stream.audioChannels"] || [],
+      languages: values["stream.languages"] || [],
+      languageEmojis: values["stream.languageEmojis"] || [],
+      size: values["stream.size"] || null,
+      indexer: values["stream.indexer"] || null,
+      releaseGroup: values["stream.releaseGroup"] || null,
+      type: values["stream.type"] || null,
+      cached: values["service.cached"],
+      serviceShortName: values["service.shortName"] || null,
+      serviceName: values["service.name"] || null
+    }
   };
 }
 

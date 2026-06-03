@@ -171,6 +171,15 @@ function booleanOrNull(value) {
   return typeof value === "boolean" ? value : null;
 }
 
+function booleanFromAnyKey(raw = {}, keys = []) {
+  for (const key of keys) {
+    if (booleanOrNull(raw[key]) != null) {
+      return Boolean(raw[key]);
+    }
+  }
+  return null;
+}
+
 function stringOrNull(value) {
   if (value == null) {
     return null;
@@ -976,6 +985,7 @@ const FEATURE_ADAPTERS = {
         stream_dolby_vision_filter: String(settings.streamDolbyVisionFilter || "ANY").toUpperCase(),
         stream_hdr_filter: String(settings.streamHdrFilter || "ANY").toUpperCase(),
         stream_codec_filter: String(settings.streamCodecFilter || "ANY").toUpperCase(),
+        stream_badges_enabled: settings.streamBadgesEnabled !== false,
         stream_preferences: settings.streamPreferences ? JSON.stringify(settings.streamPreferences) : "",
         debrid_stream_name_template: String(settings.streamNameTemplate || ""),
         debrid_stream_description_template: String(settings.streamDescriptionTemplate || ANDROID_DEBRID_STREAM_DESCRIPTION_TEMPLATE)
@@ -992,6 +1002,10 @@ const FEATURE_ADAPTERS = {
           projected[key] = Boolean(raw[key]);
         }
       });
+      const streamBadgesEnabled = booleanFromAnyKey(raw, ["stream_badges_enabled", "stream_show_badges", "show_stream_badges"]);
+      if (streamBadgesEnabled != null) {
+        projected.stream_badges_enabled = streamBadgesEnabled;
+      }
       [
         "torbox_api_key",
         "premiumize_api_key",
@@ -1061,6 +1075,10 @@ const FEATURE_ADAPTERS = {
       }
       if (raw.stream_codec_filter != null) {
         partial.streamCodecFilter = String(raw.stream_codec_filter || "ANY").trim().toUpperCase();
+      }
+      const streamBadgesEnabled = booleanFromAnyKey(raw, ["stream_badges_enabled", "stream_show_badges", "show_stream_badges"]);
+      if (streamBadgesEnabled != null) {
+        partial.streamBadgesEnabled = streamBadgesEnabled;
       }
       if (raw.stream_preferences != null) {
         partial.streamPreferences = String(raw.stream_preferences || "").trim();

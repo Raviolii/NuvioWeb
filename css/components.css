@@ -14790,6 +14790,61 @@ button:focus-visible {
   color: var(--secondary-color);
 }
 
+.stream-route-card-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 8px;
+  max-width: 100%;
+}
+
+.stream-route-stream-badge {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 20px;
+  font-weight: 800;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.stream-route-stream-badge.quality {
+  border-color: rgba(0, 183, 79, 0.42);
+  background: rgba(0, 183, 79, 0.14);
+  color: #4ade80;
+}
+
+.stream-route-stream-badge.visual {
+  border-color: rgba(251, 188, 5, 0.38);
+  background: rgba(251, 188, 5, 0.12);
+  color: #facc15;
+}
+
+.stream-route-stream-badge.codec {
+  border-color: rgba(33, 150, 243, 0.36);
+  background: rgba(33, 150, 243, 0.12);
+  color: #60a5fa;
+}
+
+.stream-route-stream-badge.audio {
+  border-color: rgba(236, 72, 153, 0.34);
+  background: rgba(236, 72, 153, 0.1);
+  color: #f472b6;
+}
+
+.stream-route-stream-badge.size,
+.stream-route-stream-badge.service {
+  color: var(--text-tertiary);
+}
+
 .stream-route-card-line {
   margin-top: 8px;
   font-size: 19px;
