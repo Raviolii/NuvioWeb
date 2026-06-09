@@ -10,7 +10,8 @@ import { Environment } from "../../../platform/environment.js";
 import { I18n } from "../../../i18n/index.js";
 import {
   matchStreamBadges,
-  normalizeStreamBadgeChipColor
+  normalizeStreamBadgeChipColor,
+  normalizeStreamBadgeRules
 } from "../../../core/streams/streamBadgeRules.js";
 
 const failedAddonLogoUrls = new Set();
@@ -322,6 +323,31 @@ function normalizeAddonLogoUrl(value = "") {
   return String(value || "").trim();
 }
 
+export function resetAddonLogoCache() {
+  failedAddonLogoUrls.clear();
+  addonLogoCache.clear();
+  addonLogoCacheHydrated = false;
+  if (addonLogoCachePersistTimer) {
+    clearTimeout(addonLogoCachePersistTimer);
+    addonLogoCachePersistTimer = null;
+  }
+  LocalStore.remove(ADDON_LOGO_CACHE_KEY);
+}
+
+export async function preloadStreamBadgeImages(settings = StreamBadgeSettingsStore.snapshot()) {
+  const rules = normalizeStreamBadgeRules(settings?.rules);
+  const urls = new Set();
+  rules.imports.forEach((importItem) => {
+    (importItem.filters || []).forEach((filter) => {
+      const url = normalizeAddonLogoUrl(filter.imageURL);
+      if (url) {
+        urls.add(url);
+      }
+    });
+  });
+  await Promise.all(Array.from(urls).map((url) => requestAddonLogo(url)));
+}
+
 function hydrateAddonLogoCache() {
   if (addonLogoCacheHydrated) {
     return;
@@ -394,72 +420,72 @@ function imageToDataUrl(image) {
 function requestAddonLogo(url = "", onSettled = null) {
   const normalized = normalizeAddonLogoUrl(url);
   if (!normalized || failedAddonLogoUrls.has(normalized)) {
-    return;
+    return Promise.resolve(false);
   }
   hydrateAddonLogoCache();
   const cached = addonLogoCache.get(normalized);
   if (cached?.status === "ready" || cached?.status === "loading" || cached?.status === "direct") {
-    return;
+    return Promise.resolve(cached.status !== "loading");
   }
 
   addonLogoCache.set(normalized, { status: "loading", updatedAt: Date.now() });
-
-  const fail = () => {
-    failedAddonLogoUrls.add(normalized);
-    addonLogoCache.set(normalized, { status: "failed", updatedAt: Date.now() });
-    if (typeof onSettled === "function") {
-      onSettled();
-    }
-  };
-  const finishDirect = () => {
-    addonLogoCache.set(normalized, {
-      status: "direct",
-      displayUrl: normalized,
-      updatedAt: Date.now()
-    });
-    if (typeof onSettled === "function") {
-      onSettled();
-    }
-  };
-  const loadDirect = () => {
-    const directImage = new Image();
-    directImage.decoding = "async";
+  return new Promise((resolve) => {
+    const settle = (ok) => {
+      if (typeof onSettled === "function") {
+        onSettled();
+      }
+      resolve(ok);
+    };
+    const fail = () => {
+      failedAddonLogoUrls.add(normalized);
+      addonLogoCache.set(normalized, { status: "failed", updatedAt: Date.now() });
+      settle(false);
+    };
+    const finishDirect = () => {
+      addonLogoCache.set(normalized, {
+        status: "direct",
+        displayUrl: normalized,
+        updatedAt: Date.now()
+      });
+      settle(true);
+    };
+    const loadDirect = () => {
+      const directImage = new Image();
+      directImage.decoding = "async";
+      try {
+        directImage.referrerPolicy = "no-referrer";
+      } catch (_) {
+        // Some TV browsers expose referrerPolicy as read-only.
+      }
+      directImage.onload = finishDirect;
+      directImage.onerror = fail;
+      directImage.src = normalized;
+    };
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
     try {
-      directImage.referrerPolicy = "no-referrer";
+      image.referrerPolicy = "no-referrer";
     } catch (_) {
       // Some TV browsers expose referrerPolicy as read-only.
     }
-    directImage.onload = finishDirect;
-    directImage.onerror = fail;
-    directImage.src = normalized;
-  };
-  const image = new Image();
-  image.crossOrigin = "anonymous";
-  image.decoding = "async";
-  try {
-    image.referrerPolicy = "no-referrer";
-  } catch (_) {
-    // Some TV browsers expose referrerPolicy as read-only.
-  }
-  image.onload = () => {
-    try {
-      const dataUrl = imageToDataUrl(image);
-      addonLogoCache.set(normalized, {
-        status: "ready",
-        displayUrl: dataUrl,
-        updatedAt: Date.now()
-      });
-      scheduleAddonLogoCachePersist();
-    } catch (_) {
-      loadDirect();
-      return;
-    }
-    if (typeof onSettled === "function") {
-      onSettled();
-    }
-  };
-  image.onerror = loadDirect;
-  image.src = normalized;
+    image.onload = () => {
+      try {
+        const dataUrl = imageToDataUrl(image);
+        addonLogoCache.set(normalized, {
+          status: "ready",
+          displayUrl: dataUrl,
+          updatedAt: Date.now()
+        });
+        scheduleAddonLogoCachePersist();
+        settle(true);
+      } catch (_) {
+        loadDirect();
+      }
+    };
+    image.onerror = loadDirect;
+    image.src = normalized;
+  });
 }
 
 function getCachedAddonLogoDisplayUrl(url = "") {
@@ -799,6 +825,11 @@ function buildLegacyStreamBadges(stream = {}, enabled = true, includeSizeBadge =
 }
 
 function renderImageBadgeChip(badge = {}) {
+  const imageUrl = normalizeAddonLogoUrl(badge.imageURL);
+  const cachedImageUrl = getCachedAddonLogoDisplayUrl(imageUrl);
+  if (imageUrl && !cachedImageUrl && !failedAddonLogoUrls.has(imageUrl)) {
+    requestAddonLogo(imageUrl);
+  }
   const backgroundColor = normalizeStreamBadgeChipColor(badge.tagColor);
   const outlineColor = normalizeStreamBadgeChipColor(badge.borderColor);
   const textColor = normalizeStreamBadgeChipColor(badge.textColor);
@@ -810,7 +841,7 @@ function renderImageBadgeChip(badge = {}) {
   ].join("");
   return `
     <span class="stream-route-stream-badge image${filled ? " filled" : ""}"${style ? ` style="${escapeHtml(style)}"` : ""}>
-      <img src="${escapeHtml(badge.imageURL)}" alt="${escapeHtml(badge.name || "")}" loading="lazy" />
+      <img src="${escapeHtml(cachedImageUrl || imageUrl)}" alt="${escapeHtml(badge.name || "")}" loading="lazy" decoding="async" />
     </span>
   `;
 }
@@ -1177,17 +1208,6 @@ export const StreamScreen = {
           logo: group?.addonLogo || "",
           orderIndex: group?.addonOrderIndex
         })));
-        const chunkItems = this.applyAddonLogos(flattenStreams(chunkResult));
-        if (!chunkItems.length) {
-          this.requestRender();
-          return;
-        }
-        this.streams = mergeStreamItems(this.streams, chunkItems);
-        this.scheduleDebridPreparation();
-        this.loading = false;
-        if (this.focusState.zone !== "card") {
-          this.focusState = { zone: "card", index: 0 };
-        }
         this.requestRender();
       }
     };
@@ -1197,7 +1217,12 @@ export const StreamScreen = {
       if (token !== this.loadToken) {
         return;
       }
-      this.streams = mergeStreamItems(this.streams, this.applyAddonLogos(flattenStreams(streamResult)));
+      const loadedStreams = mergeStreamItems([], this.applyAddonLogos(flattenStreams(streamResult)));
+      await preloadStreamBadgeImages();
+      if (token !== this.loadToken) {
+        return;
+      }
+      this.streams = loadedStreams;
       this.scheduleDebridPreparation();
       markSuccessfulSources(this.streams.map((stream) => stream.addonName));
       this.sourceChips = this.sourceChips.map((chip) => (

@@ -1887,12 +1887,13 @@ button:focus-visible {
   width: 0;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: clip;
   transform: translateX(-12px);
   transition: opacity 140ms cubic-bezier(0.4, 0, 0.2, 1), width 350ms cubic-bezier(0.4, 0, 0.2, 1), transform 350ms cubic-bezier(0.4, 0, 0.2, 1);
   font-family: inherit;
-  font-size: inherit;
+  font-size: clamp(24px, 1.45vw, 32px);
   font-weight: inherit;
-  line-height: inherit;
+  line-height: 1.05;
   letter-spacing: inherit;
 }
 
@@ -2271,11 +2272,11 @@ button:focus-visible {
 .modern-sidebar-pill-label {
   min-width: 0;
   flex: 1;
-  font-size: 40px;
-  line-height: 56px;
+  font-size: clamp(30px, 1.85vw, 40px);
+  line-height: 1.15;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
+  text-overflow: clip;
 }
 
 .modern-sidebar-nav-label,
@@ -6371,9 +6372,12 @@ button:focus-visible {
 }
 
 .settings-nav-label {
-  font-size: 32px;
+  font-size: clamp(26px, 1.7vw, 32px);
   font-weight: 400;
   line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
 }
 
 .settings-nav-label-wrap {
@@ -6381,6 +6385,7 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: nowrap;
 }
 
 .settings-nav-badge {
@@ -9724,25 +9729,31 @@ button:focus-visible {
   pointer-events: none;
 }
 
-.player-loading-overlay.seek-only .player-loading-backdrop,
-.player-loading-overlay.seek-only .player-loading-gradient,
-.player-loading-overlay.seek-only .player-loading-title,
-.player-loading-overlay.seek-only .player-loading-subtitle,
-.player-loading-overlay.logo-only .player-loading-backdrop,
-.player-loading-overlay.logo-only .player-loading-gradient,
-.player-loading-overlay.logo-only .player-loading-title,
-.player-loading-overlay.logo-only .player-loading-subtitle {
-  display: none;
+.player-loading-spinner {
+  position: absolute;
+  inset: 0;
+  z-index: 34;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 180ms ease;
 }
 
-.player-loading-overlay.seek-only .player-loading-center,
-.player-loading-overlay.logo-only .player-loading-center {
-  width: auto;
+.player-loading-spinner.hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
-.player-loading-overlay.seek-only .player-loading-logo,
-.player-loading-overlay.logo-only .player-loading-logo {
-  margin-bottom: 0;
+.player-loading-spinner-ring {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  border: 6px solid rgba(255, 255, 255, 0.18);
+  border-top-color: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 0 22px rgba(0, 0, 0, 0.35);
+  animation: playerLoadingSpinnerRotate 900ms linear infinite;
 }
 
 .player-loading-backdrop {
@@ -9835,6 +9846,15 @@ button:focus-visible {
   }
   to {
     transform: scale(1.04);
+  }
+}
+
+@keyframes playerLoadingSpinnerRotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -10352,15 +10372,15 @@ button:focus-visible {
 
 .player-skip-intro {
   position: absolute;
-  left: var(--tv-safe-gutter);
-  bottom: clamp(32px, 3vh, 46px);
+  left: min(3.33vw, 64px);
+  bottom: min(3.125vw, 60px);
   z-index: 29;
   opacity: 1;
   transition: bottom 180ms ease, opacity 180ms ease;
 }
 
 .player-skip-intro.is-raised {
-  bottom: clamp(138px, 15vh, 176px);
+  bottom: min(12.71vw, 244px);
 }
 
 .player-skip-intro.hidden {
@@ -10369,28 +10389,94 @@ button:focus-visible {
 }
 
 .player-skip-intro-btn {
-  min-width: clamp(220px, 14vw, 300px);
-  min-height: clamp(60px, 4vw, 76px);
-  padding: 0 clamp(20px, 1.5vw, 28px);
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(18, 18, 18, 0.88);
-  color: rgba(248, 251, 255, 0.96);
-  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.26);
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: min(1.25vw, 24px);
+  background: rgba(30, 30, 30, 0.85);
+  color: #fff;
+  box-shadow: none;
+  position: relative;
+  overflow: hidden;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
 }
 
 .player-skip-intro-btn.is-selected {
-  border-color: var(--secondary-color);
-  box-shadow: 0 0 0 2px rgba(30, 136, 229, 0.22), 0 14px 32px rgba(0, 0, 0, 0.26);
+  background: rgba(30, 30, 30, 0.85);
+  color: #fff;
+  box-shadow: none;
+}
+
+.player-skip-intro-btn.focused,
+.player-skip-intro-btn:focus,
+.player-skip-intro:focus-within .player-skip-intro-btn {
+  background: var(--secondary-color) !important;
+  color: var(--on-secondary) !important;
+  box-shadow: none;
+}
+
+.player-skip-intro-content {
+  display: inline-flex;
+  align-items: center;
+  gap: min(0.83vw, 16px);
+  padding: min(1.25vw, 24px) min(1.875vw, 36px);
+  min-width: 0;
+}
+
+.player-skip-intro-icon {
+  width: min(2.08vw, 40px);
+  height: min(2.08vw, 40px);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+
+.player-skip-intro-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .player-skip-intro-label {
-  font-size: clamp(20px, 1.25vw, 26px);
-  font-weight: 700;
+  font-size: min(1.46vw, 28px);
+  font-weight: 500;
   line-height: 1;
+}
+
+.player-skip-intro-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: min(0.208vw, 4px);
+  opacity: var(--skip-intro-progress-visible, 1);
+  pointer-events: none;
+}
+
+.player-skip-intro-progress-track,
+.player-skip-intro-progress-fill {
+  position: absolute;
+  inset: 0;
+}
+
+.player-skip-intro-progress-track {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.player-skip-intro-progress-fill {
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: rgba(30, 30, 30, 0.85);
+  will-change: transform;
 }
 
 .player-next-episode-card {
@@ -10534,14 +10620,22 @@ button:focus-visible {
 
 .player-parental-guide {
   position: absolute;
-  left: 28px;
-  top: 72px;
+  left: 64px;
+  top: 48px;
   z-index: 34;
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  opacity: 1;
-  transition: opacity 220ms ease;
+  gap: 0;
+  overflow: visible;
+  opacity: 0;
+  pointer-events: none;
+  animation: playerParentalContainerIn 300ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.player-parental-guide.is-exiting {
+  animation-name: playerParentalContainerOut;
+  animation-duration: 200ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .player-parental-guide.hidden {
@@ -10550,51 +10644,124 @@ button:focus-visible {
 }
 
 .player-parental-line {
-  width: 2px;
-  min-height: 118px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.18));
+  width: 6px;
+  height: 0px;
+  border-radius: 3px;
+  position: relative;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  overflow: hidden;
+  will-change: height;
+}
+
+.player-parental-line-fill {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--parental-accent, var(--secondary-color));
+  opacity: 1;
+}
+
+.player-parental-guide.is-exiting .player-parental-line-fill {
+  opacity: 1;
 }
 
 .player-parental-list {
+  padding-left: 20px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--parental-row-gap, 4px);
 }
 
 .player-parental-item {
-  min-width: 240px;
-  min-height: 38px;
-  padding: 6px 12px;
-  border-radius: 10px;
+  min-width: 0;
+  min-height: var(--parental-row-height, 36px);
+  height: var(--parental-row-height, 36px);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  background: rgba(8, 12, 18, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(241, 248, 255, 0.95);
-  animation: playerParentalItemIn 260ms ease both;
+  gap: 0;
+  color: rgba(255, 255, 255, 0.85);
+  opacity: 0;
+  animation: playerParentalItemIn 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.player-parental-guide.is-exiting .player-parental-item {
+  animation-name: playerParentalItemOut;
+  animation-duration: 150ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .player-parental-label {
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.player-parental-separator {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1;
 }
 
 .player-parental-severity {
-  font-size: 16px;
-  color: rgba(225, 235, 247, 0.8);
+  font-size: 22px;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 400;
+  line-height: 1;
 }
 
 @keyframes playerParentalItemIn {
   from {
     opacity: 0;
-    transform: translateX(-8px);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+  }
+}
+
+@keyframes playerParentalItemOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes playerParentalLineIn {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes playerParentalLineOut {
+  from {
+    transform: scaleY(1);
+  }
+  to {
+    transform: scaleY(0);
+  }
+}
+
+@keyframes playerParentalContainerIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes playerParentalContainerOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
   }
 }
 
@@ -11719,24 +11886,76 @@ button:focus-visible {
 .player-skip-intro-btn {
   min-height: 0;
   min-width: 0;
-  padding: min(1.25vw, 24px) min(1.875vw, 36px); /* ATV 12/18dp */
+  padding: 0;
   border: none;
-  border-radius: min(1.25vw, 24px); /* ATV 12dp -> 24px */
-  background: rgba(30, 30, 30, 0.85); /* ATV #1E1E1E alpha .85 */
+  border-radius: min(1.25vw, 24px);
+  background: rgba(30, 30, 30, 0.85);
   color: #fff;
   box-shadow: none;
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
 }
 
-.player-skip-intro-btn.is-selected,
-.player-skip-intro:focus-within .player-skip-intro-btn {
-  background: var(--player-secondary);
-  color: var(--player-on-secondary);
-  border-color: transparent;
-  box-shadow: none;
+.player-skip-intro-content {
+  display: inline-flex;
+  align-items: center;
+  gap: min(0.83vw, 16px);
+  padding: min(1.25vw, 24px) min(1.875vw, 36px);
+  min-width: 0;
+}
+
+.player-skip-intro-icon {
+  width: min(2.08vw, 40px);
+  height: min(2.08vw, 40px);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+
+.player-skip-intro-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .player-skip-intro-label {
   font-size: min(1.46vw, 28px); /* ATV 14sp -> 28px */
+  font-weight: 500;
+  line-height: 1;
+}
+
+.player-skip-intro-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: min(0.208vw, 4px);
+  opacity: var(--skip-intro-progress-visible, 1);
+  pointer-events: none;
+}
+
+.player-skip-intro-progress-track,
+.player-skip-intro-progress-fill {
+  position: absolute;
+  inset: 0;
+}
+
+.player-skip-intro-progress-track {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.player-skip-intro-progress-fill {
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: rgba(30, 30, 30, 0.85);
+  will-change: transform;
 }
 
 .player-aspect-toast {
@@ -14156,6 +14375,10 @@ button:focus-visible {
   animation: none !important;
 }
 
+.performance-constrained .player-loading-spinner-ring {
+  animation: playerLoadingSpinnerRotate 900ms linear infinite !important;
+}
+
 .performance-constrained .stream-route-chip-spinner {
   animation: streamRouteSpin 700ms linear infinite !important;
 }
@@ -14372,18 +14595,81 @@ button:focus-visible {
 }
 
 .legacy-webos .player-skip-intro {
-  left: 48px;
-  bottom: 40px;
+  left: 64px;
+  bottom: 60px;
 }
 
 .legacy-webos .player-skip-intro.is-raised {
-  bottom: 156px;
+  bottom: 244px;
 }
 
 .legacy-webos .player-skip-intro-btn {
-  min-width: 260px;
-  min-height: 68px;
-  padding: 0 24px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 24px;
+  background: rgba(30, 30, 30, 0.85);
+  color: #fff;
+  box-shadow: none;
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.legacy-webos .player-skip-intro-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 36px;
+  min-width: 0;
+}
+
+.legacy-webos .player-skip-intro-icon {
+  width: 40px;
+  height: 40px;
+}
+
+.legacy-webos .player-skip-intro-label {
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.legacy-webos .player-skip-intro-progress {
+  height: 4px;
+}
+
+.legacy-webos .player-skip-intro-progress-track,
+.legacy-webos .player-skip-intro-progress-fill {
+  position: absolute;
+  inset: 0;
+}
+
+.legacy-webos .player-skip-intro-progress-track {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.legacy-webos .player-skip-intro-progress-fill {
+  width: 100%;
+  transform: scaleX(0);
+  transform-origin: left center;
+  background: rgba(30, 30, 30, 0.85);
+  will-change: transform;
+}
+
+.legacy-webos .player-skip-intro-btn.is-selected,
+.legacy-webos .player-skip-intro-btn.focused,
+.legacy-webos .player-skip-intro-btn:focus,
+.legacy-webos .player-skip-intro:focus-within .player-skip-intro-btn {
+  background: var(--secondary-color) !important;
+  color: var(--on-secondary) !important;
+  box-shadow: none;
 }
 
 .legacy-webos .player-next-episode-card {
@@ -14720,18 +15006,80 @@ button:focus-visible {
   }
 
   .player-skip-intro {
-    left: 48px;
-    bottom: 40px;
+    left: 64px;
+    bottom: 60px;
   }
 
   .player-skip-intro.is-raised {
-    bottom: 156px;
+    bottom: 244px;
   }
 
   .player-skip-intro-btn {
-    min-width: 260px;
-    min-height: 68px;
-    padding: 0 24px;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    border: none;
+    appearance: none;
+    -webkit-appearance: none;
+    border-radius: 24px;
+    background: rgba(30, 30, 30, 0.85);
+    color: #fff;
+    box-shadow: none;
+    position: relative;
+    overflow: hidden;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+
+  .player-skip-intro-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 36px;
+    min-width: 0;
+  }
+
+  .player-skip-intro-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .player-skip-intro-label {
+    font-size: 28px;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .player-skip-intro-progress {
+    height: 4px;
+  }
+
+  .player-skip-intro-progress-track,
+  .player-skip-intro-progress-fill {
+    position: absolute;
+    inset: 0;
+  }
+
+  .player-skip-intro-progress-track {
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  .player-skip-intro-progress-fill {
+    width: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
+    background: rgba(30, 30, 30, 0.85);
+    will-change: transform;
+  }
+
+  .player-skip-intro-btn.focused,
+  .player-skip-intro-btn:focus,
+  .player-skip-intro:focus-within .player-skip-intro-btn {
+    background: var(--secondary-color) !important;
+    color: var(--on-secondary) !important;
+    box-shadow: none;
   }
 
   .player-next-episode-card {

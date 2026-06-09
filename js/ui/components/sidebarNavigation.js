@@ -84,6 +84,87 @@ function itemLabel(item) {
   return t(item?.labelKey, {}, String(item?.label || item?.route || ""));
 }
 
+function getSidebarTextFitTargets(container) {
+  return Array.from(container?.querySelectorAll([
+    ".home-sidebar .home-nav-label",
+    ".modern-sidebar-panel .modern-sidebar-nav-label",
+    ".modern-sidebar-pill-label"
+  ].join(", ")) || []);
+}
+
+function fitSidebarLabel(node, minFontSizePx) {
+  if (!node || !node.isConnected) {
+    return false;
+  }
+
+  const targetWidth = node.getBoundingClientRect().width;
+  if (!Number.isFinite(targetWidth) || targetWidth <= 0) {
+    return false;
+  }
+
+  const previousInlineSize = node.style.fontSize;
+  node.style.fontSize = "";
+
+  const computedSize = Number.parseFloat(globalThis?.getComputedStyle ? getComputedStyle(node).fontSize : "") || 0;
+  if (!computedSize) {
+    node.style.fontSize = previousInlineSize;
+    return false;
+  }
+
+  const currentWidth = node.scrollWidth;
+  if (currentWidth <= node.clientWidth + 1) {
+    node.style.fontSize = "";
+    return true;
+  }
+
+  const minSize = Math.max(12, Number(minFontSizePx) || 12);
+  let low = minSize;
+  let high = computedSize;
+  let best = minSize;
+
+  for (let index = 0; index < 8 && high - low > 0.25; index += 1) {
+    const mid = (low + high) / 2;
+    node.style.fontSize = `${mid}px`;
+    if (node.scrollWidth <= node.clientWidth + 1) {
+      best = mid;
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  node.style.fontSize = `${best}px`;
+  return true;
+}
+
+function fitRootSidebarText(container) {
+  const targets = getSidebarTextFitTargets(container);
+  targets.forEach((node) => {
+    if (node.matches(".home-nav-label")) {
+      fitSidebarLabel(node, 24);
+      return;
+    }
+    if (node.matches(".modern-sidebar-pill-label")) {
+      fitSidebarLabel(node, 28);
+      return;
+    }
+    fitSidebarLabel(node, 30);
+  });
+}
+
+function scheduleRootSidebarTextFit(container) {
+  if (!container) {
+    return;
+  }
+  if (container._rootSidebarTextFitRaf) {
+    cancelAnimationFrame(container._rootSidebarTextFitRaf);
+  }
+  container._rootSidebarTextFitRaf = requestAnimationFrame(() => {
+    container._rootSidebarTextFitRaf = null;
+    fitRootSidebarText(container);
+  });
+}
+
 function getSelectedItem(routeName = "") {
   return ROOT_SIDEBAR_ITEMS.find((item) => item.route === String(routeName || "")) || ROOT_SIDEBAR_ITEMS[0];
 }
@@ -328,6 +409,8 @@ export function bindRootSidebarEvents(container, {
       }
     };
   });
+
+  scheduleRootSidebarTextFit(container);
 }
 
 export function setLegacySidebarExpanded(container, expanded) {
@@ -350,7 +433,9 @@ export function setLegacySidebarExpanded(container, expanded) {
     sidebar._legacyOpenTimer = setTimeout(() => {
       sidebar.classList.remove("opening");
       sidebar._legacyOpenTimer = null;
+      scheduleRootSidebarTextFit(container);
     }, 350);
+    scheduleRootSidebarTextFit(container);
     return;
   }
 
@@ -359,7 +444,9 @@ export function setLegacySidebarExpanded(container, expanded) {
   void sidebar.offsetWidth;
   requestAnimationFrame(() => {
     sidebar.classList.remove("expanded");
+    scheduleRootSidebarTextFit(container);
   });
+  scheduleRootSidebarTextFit(container);
 }
 
 export function getLegacySidebarNodes(container) {
@@ -479,7 +566,9 @@ export function setModernSidebarExpanded(container, expanded) {
     shell._modernOpenTimer = setTimeout(() => {
       shell.classList.remove("opening");
       shell._modernOpenTimer = null;
+      scheduleRootSidebarTextFit(container);
     }, 365);
+    scheduleRootSidebarTextFit(container);
     return true;
   }
 
@@ -498,7 +587,9 @@ export function setModernSidebarExpanded(container, expanded) {
       panel.setAttribute("aria-hidden", "true");
     }
     shell._modernCloseEndTimer = null;
+    scheduleRootSidebarTextFit(container);
   }, 430);
+  scheduleRootSidebarTextFit(container);
   return true;
 }
 
