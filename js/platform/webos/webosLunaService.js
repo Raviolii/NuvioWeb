@@ -101,6 +101,73 @@ export const WebOsLunaService = {
         });
       }
     });
+  },
+
+  subscribe(service, { method = "", parameters = {}, onSuccess = null, onFailure = null } = {}) {
+    const request = getServiceRequest();
+    if (request) {
+      const handle = request(String(service || "").trim(), {
+        method: String(method || "").trim(),
+        parameters: parameters && typeof parameters === "object" ? { ...parameters } : {},
+        subscribe: true,
+        onSuccess: (result) => {
+          if (typeof onSuccess === "function") {
+            onSuccess(result || {});
+          }
+        },
+        onFailure: (result) => {
+          if (typeof onFailure === "function") {
+            onFailure(result || {
+              returnValue: false,
+              errorCode: -1,
+              errorText: "Luna subscription failed"
+            });
+          }
+        }
+      });
+      return {
+        cancel() {
+          try {
+            handle?.cancel?.();
+          } catch (_) {
+            // Ignore cancellation failures.
+          }
+        }
+      };
+    }
+
+    const PalmServiceBridge = getPalmServiceBridge();
+    const targetUrl = buildPalmServiceUrl(service, method);
+    if (!PalmServiceBridge || !targetUrl) {
+      throw {
+        returnValue: false,
+        errorCode: -1,
+        errorText: "Luna service bridge unavailable"
+      };
+    }
+
+    const bridge = new PalmServiceBridge();
+    const payload = parameters && typeof parameters === "object" ? { ...parameters, subscribe: true } : { subscribe: true };
+    bridge.onservicecallback = (rawResponse) => {
+      const parsed = parseBridgePayload(rawResponse);
+      if (parsed?.returnValue === false || parsed?.errorCode) {
+        if (typeof onFailure === "function") {
+          onFailure(parsed);
+        }
+      } else if (typeof onSuccess === "function") {
+        onSuccess(parsed || {});
+      }
+    };
+    bridge.call(targetUrl, JSON.stringify(payload));
+    return {
+      cancel() {
+        try {
+          bridge.cancel?.();
+        } catch (_) {
+          // Ignore cancellation failures.
+        }
+      }
+    };
   }
 
 };

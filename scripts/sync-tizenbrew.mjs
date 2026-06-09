@@ -7,7 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const appName = "Nuvio TV";
-const defaultHostedEnvUrl = "https://nuvioapp.space/nuvio.env.js";
+const defaultHostedEnvUrl = "https://nuvio.tv/nuvio.env.js";
 const defaultEnvFileContents = `(function bootstrapTizenEnv() {
   var root = typeof globalThis !== "undefined" ? globalThis : window;
   var finished = false;
@@ -24,6 +24,7 @@ const defaultEnvFileContents = `(function bootstrapTizenEnv() {
       PUBLIC_APP_URL: "",
       YOUTUBE_PROXY_URL: "youtube-proxy.html",
       ADDON_REMOTE_BASE_URL: "",
+      TIZEN_ENGINEFS_SERVICE_ID: "",
       ENABLE_REMOTE_WRAPPER_MODE: false,
       PREFERRED_PLAYBACK_ORDER: ["native-hls", "hls.js", "dash.js", "native-file", "platform-avplay"],
       TMDB_API_KEY: ""

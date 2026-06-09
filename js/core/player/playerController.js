@@ -11,6 +11,12 @@ import { loadStreamingLibs } from "../../runtime/loadStreamingLibs.js";
 
 const MIN_PROGRESS_SYNC_DURATION_MS = 60000;
 
+function logEngineFsDebug(...args) {
+  if (globalThis.__NUVIO_DEBUG_ENGINEFS__) {
+    console.info(...args);
+  }
+}
+
 export const PlayerController = {
 
   video: null,
@@ -110,6 +116,10 @@ export const PlayerController = {
       || this.isLikelyDashMimeType(normalized)
       || this.isLikelySmoothStreamingMimeType(normalized)
     ) {
+      return normalized;
+    }
+    // webOS can reject Matroska in canPlayType() while still needing the explicit source type.
+    if (Platform.isWebOS() && normalized === "video/x-matroska") {
       return normalized;
     }
     return this.canPlayNatively(normalized) ? normalized : null;
@@ -1559,17 +1569,8 @@ export const PlayerController = {
 
     if (this.isLikelyHlsMimeType(normalizedSourceType)) {
       const candidates = [];
-      if (isTizenRuntime) {
-        if (canPlayNativeHls) {
-          pushCandidate(candidates, "native-hls");
-        }
-        if (canUseHlsJs) {
-          pushCandidate(candidates, "hls.js");
-        }
-        if (canUseAvPlay) {
-          pushCandidate(candidates, avplayEngine);
-        }
-        return candidates;
+      if (isTizenRuntime && canUseAvPlay) {
+        pushCandidate(candidates, avplayEngine);
       }
       if (preferTvNative && canUseAvPlay) {
         pushCandidate(candidates, avplayEngine);
@@ -1577,10 +1578,10 @@ export const PlayerController = {
       if (canPlayNativeHls) {
         pushCandidate(candidates, "native-hls");
       }
-      if (isLivePlayback && canUseHlsJs) {
+      if (isLivePlayback && (canUseHlsJs || isTizenRuntime)) {
         pushCandidate(candidates, "hls.js");
       }
-      if (isTizenRuntime && canUseHlsJs) {
+      if (isTizenRuntime && !isLivePlayback) {
         pushCandidate(candidates, "hls.js");
       }
       if (!isTizenRuntime && canUseHlsJs) {
@@ -1594,17 +1595,8 @@ export const PlayerController = {
 
     if (this.isLikelyDashMimeType(normalizedSourceType)) {
       const candidates = [];
-      if (isTizenRuntime) {
-        if (canPlayNativeDash) {
-          pushCandidate(candidates, "native-dash");
-        }
-        if (canUseDashJs) {
-          pushCandidate(candidates, "dash.js");
-        }
-        if (canUseAvPlay) {
-          pushCandidate(candidates, avplayEngine);
-        }
-        return candidates;
+      if (isTizenRuntime && canUseAvPlay) {
+        pushCandidate(candidates, avplayEngine);
       }
       if (preferTvNative && canUseAvPlay) {
         pushCandidate(candidates, avplayEngine);
@@ -1612,10 +1604,10 @@ export const PlayerController = {
       if (canPlayNativeDash) {
         pushCandidate(candidates, "native-dash");
       }
-      if (isLivePlayback && canUseDashJs) {
+      if (isLivePlayback && (canUseDashJs || isTizenRuntime)) {
         pushCandidate(candidates, "dash.js");
       }
-      if (isTizenRuntime && canUseDashJs) {
+      if (isTizenRuntime && !isLivePlayback) {
         pushCandidate(candidates, "dash.js");
       }
       if (!isTizenRuntime && canUseDashJs) {
@@ -1629,6 +1621,9 @@ export const PlayerController = {
 
     if (this.isLikelySmoothStreamingMimeType(normalizedSourceType)) {
       const candidates = [];
+      if (isTizenRuntime && canUseAvPlay) {
+        pushCandidate(candidates, avplayEngine);
+      }
       if (canPlayNativeSmooth) {
         pushCandidate(candidates, "native-file");
       }
@@ -1639,6 +1634,9 @@ export const PlayerController = {
     }
 
     const candidates = [];
+    if (Platform.isWebOS() && normalizedSourceType === "video/x-matroska" && canUseAvPlay) {
+      pushCandidate(candidates, avplayEngine);
+    }
     if (isTizenRuntime && canUseAvPlay) {
       pushCandidate(candidates, avplayEngine);
     }
@@ -1658,6 +1656,15 @@ export const PlayerController = {
     const currentEngine = String(this.playbackEngine || "").trim();
     const candidates = this.getPlaybackEngineCandidates(normalizedUrl, sourceType, itemType);
     return candidates.find((candidate) => candidate !== currentEngine && !attemptedEngines.has(candidate)) || null;
+  },
+
+  isEngineFsPlaybackUrl(url = "") {
+    try {
+      const parsedUrl = new URL(String(url || ""));
+      return /\/([0-9a-f]{40})\/\d+(?:\/|$)/i.test(parsedUrl.pathname);
+    } catch (_) {
+      return false;
+    }
   },
 
   getPlaybackCapabilities() {
@@ -1722,11 +1729,33 @@ export const PlayerController = {
   },
 
   applyNativeSource(url, mimeType = null, engineName = "native-file") {
-    if (!nativeVideoEngine.load(this.video, url, mimeType)) {
+    const sourceMimeType = Platform.isWebOS() && this.isEngineFsPlaybackUrl(url)
+      ? null
+      : mimeType;
+    if (!nativeVideoEngine.load(this.video, url, sourceMimeType)) {
       return false;
     }
     this.playbackEngine = String(engineName || "native-file");
     return true;
+  },
+
+  applyWebOsEngineFsSource(url, engineName = "native-file") {
+    if (!this.video) {
+      return false;
+    }
+    Array.from(this.video.querySelectorAll("source")).forEach((node) => node.remove());
+    this.video.src = url;
+    this.playbackEngine = String(engineName || "native-file");
+    return true;
+  },
+
+  async prepareWebOsEngineFsPlayback() {
+    await this.waitForNativeMediaId();
+    try {
+      this.video?.load?.();
+    } catch (_) {
+      // webOS may throw during local EngineFS startup; play() will surface the real failure.
+    }
   },
 
   shouldForwardHeaderToHls(name) {
@@ -2539,6 +2568,9 @@ export const PlayerController = {
   },
 
   choosePlaybackEngine(url, sourceType, itemType = this.currentItemType) {
+    if (Platform.isTizen() && this.canUseAvPlay()) {
+      return this.getPlatformAvplayEngineName();
+    }
     const candidates = this.getPlaybackEngineCandidates(url, sourceType, itemType);
     if (candidates.length) {
       return candidates[0];
@@ -2549,7 +2581,11 @@ export const PlayerController = {
     return "native-file";
   },
 
-  async ensureAdaptiveLibrariesForSource(sourceType) {
+  async ensureAdaptiveLibrariesForSource(sourceType, playbackEngine = null) {
+    const normalizedEngine = String(playbackEngine || "").trim();
+    if (Platform.isTizen() && normalizedEngine !== "hls.js" && normalizedEngine !== "dash.js") {
+      return;
+    }
     const normalizedSourceType = String(sourceType || "").trim();
     if (!normalizedSourceType) {
       return;
@@ -2684,11 +2720,31 @@ export const PlayerController = {
     this.playRequestToken = playToken;
 
     const sourceType = this.currentPlaybackMediaSourceType || this.resolveRuntimeSourceType(this.guessMediaMimeType(url)) || null;
-    await this.ensureAdaptiveLibrariesForSource(sourceType);
+    const preferredEngine = forceEngine || this.choosePlaybackEngine(url, sourceType, itemType);
+    await this.ensureAdaptiveLibrariesForSource(sourceType, preferredEngine);
     if (Number(this.playRequestToken || 0) !== playToken || String(this.currentPlaybackUrl || "") !== String(url || "").trim()) {
       return;
     }
-    const preferredEngine = forceEngine || this.choosePlaybackEngine(url, sourceType, itemType);
+    try {
+      const parsedUrl = new URL(String(url || ""));
+      const isEngineFsUrl = /\/([0-9a-f]{40})\/\d+(?:\/|$)/i.test(parsedUrl.pathname);
+      if (isEngineFsUrl) {
+        const host = parsedUrl.hostname;
+        const baseUrlKind = host === "127.0.0.1" || host === "localhost" || host === "::1"
+          ? "local-service"
+          : "public-service";
+        logEngineFsDebug("PlayerController: EngineFS playback selected", {
+          baseUrlKind,
+          playbackUrl: String(url || ""),
+          declaredMediaSourceType: this.currentPlaybackMediaSourceType || null,
+          chosenSourceType: sourceType || null,
+          playbackEngine: preferredEngine,
+          webOsLoadMode: Platform.isWebOS() ? "src-mediaid-load-play" : null
+        });
+      }
+    } catch (_) {
+      // ignore logging errors
+    }
     this.rememberPlaybackEngineAttempt(this.currentPlaybackUrl, preferredEngine, {
       reset: !forceEngine
     });
@@ -2781,11 +2837,18 @@ export const PlayerController = {
         }
       });
     } else {
-      this.applyNativeSource(url, sourceType || null, "native-file");
+      const isWebOsEngineFsPlayback = Platform.isWebOS() && this.isEngineFsPlaybackUrl(url);
+      if (isWebOsEngineFsPlayback) {
+        this.applyWebOsEngineFsSource(url, "native-file");
+      } else {
+        this.applyNativeSource(url, sourceType || null, "native-file");
+      }
       this.attemptVideoPlay({
         warningLabel: "Playback start rejected",
         playToken,
-        beforePlay: () => this.waitForNativeMediaId(),
+        beforePlay: () => isWebOsEngineFsPlayback
+          ? this.prepareWebOsEngineFsPlayback()
+          : this.waitForNativeMediaId(),
         onRejected: (error) => {
           if (!this.isUnsupportedSourceError(error) || !this.canUseAvPlay() || !this.isLikelyDirectFileUrl(url)) {
             return false;

@@ -77,3 +77,29 @@ export async function requestWebOsCompanionService({ method = "", parameters = {
     errorText: "No webOS companion service responded"
   };
 }
+
+export function subscribeWebOsCompanionService({ method = "", parameters = {}, onSuccess = null, onFailure = null } = {}) {
+  if (!isWebOsCompanionServiceAvailable()) {
+    throw {
+      returnValue: false,
+      errorCode: -1,
+      errorText: "Luna service bridge unavailable"
+    };
+  }
+
+  const serviceId = getWebOsCompanionServiceIds()[0];
+  if (!serviceId) {
+    throw {
+      returnValue: false,
+      errorCode: -1,
+      errorText: "No webOS companion service id configured"
+    };
+  }
+
+  return WebOsLunaService.subscribe(`luna://${serviceId}`, {
+    method,
+    parameters,
+    onSuccess,
+    onFailure
+  });
+}

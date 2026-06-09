@@ -2,6 +2,7 @@ AGENTS.md
 nuvio.env.js
 node_modules/
 *.ipk
+*.wgt
 dist/
 .cache/
 .pm2/

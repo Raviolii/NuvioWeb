@@ -1,0 +1,47 @@
+{
+  "id": "space.nuvio.webos.service",
+  "description": "Local media helper service for webOS playback",
+  "services": [
+    {
+      "name": "space.nuvio.webos.service",
+      "description": "Boots the local media runtime and exposes health checks",
+      "commands": [
+        {
+          "name": "ping",
+          "description": "Boot the local runtime and report service health",
+          "public": true
+        },
+        {
+          "name": "status",
+          "description": "Report the local HTTP endpoint status",
+          "public": true
+        },
+        {
+          "name": "tracks",
+          "description": "Resolve embedded track metadata for a media URL",
+          "public": true
+        },
+        {
+          "name": "torrentCreate",
+          "description": "Create an EngineFS torrent stream on the local media runtime",
+          "public": true
+        },
+        {
+          "name": "torrentStats",
+          "description": "Read EngineFS torrent stream stats from the local media runtime",
+          "public": true
+        },
+        {
+          "name": "torrentRemove",
+          "description": "Remove an EngineFS torrent stream from the local media runtime",
+          "public": true
+        },
+        {
+          "name": "enginefsDiagnostic",
+          "description": "Run an EngineFS torrent diagnostic against the local media runtime",
+          "public": true
+        }
+      ]
+    }
+  ]
+}

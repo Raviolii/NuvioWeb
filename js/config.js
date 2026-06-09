@@ -23,6 +23,7 @@ export const CONTRIBUTIONS_URL = String(runtimeEnv.CONTRIBUTIONS_URL || "").trim
 export const DONATIONS_BASE_URL = String(runtimeEnv.DONATIONS_BASE_URL || "").trim();
 export const DONATIONS_DONATE_URL = String(runtimeEnv.DONATIONS_DONATE_URL || "").trim();
 export const ADDON_REMOTE_BASE_URL = String(runtimeEnv.ADDON_REMOTE_BASE_URL || "").trim();
+export const TIZEN_ENGINEFS_SERVICE_ID = String(runtimeEnv.TIZEN_ENGINEFS_SERVICE_ID || "").trim();
 export const WEBOS_SERVICE_ID = String(runtimeEnv.WEBOS_SERVICE_ID || "").trim();
 export const ENABLE_REMOTE_WRAPPER_MODE = Boolean(runtimeEnv.ENABLE_REMOTE_WRAPPER_MODE);
 export const PREFERRED_PLAYBACK_ORDER = normalizePlaybackOrder(runtimeEnv.PREFERRED_PLAYBACK_ORDER);

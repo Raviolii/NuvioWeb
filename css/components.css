@@ -14313,6 +14313,12 @@ button:focus-visible {
   animation: streamRoutePanelEnter 260ms ease forwards;
 }
 
+.stream-route-shell.stable .stream-route-panel-shell {
+  opacity: 1;
+  transform: none;
+  animation: none;
+}
+
 .stream-route-panel {
   height: 100%;
   border-radius: 18px;

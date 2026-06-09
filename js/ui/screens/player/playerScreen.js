@@ -10,9 +10,19 @@ import { I18n } from "../../../i18n/index.js";
 import { Environment } from "../../../platform/environment.js";
 import { Router } from "../../navigation/router.js";
 import { DirectDebridResolver } from "../../../core/debrid/directDebridResolver.js";
+import { WebOsEngineFsResolver } from "../../../core/p2p/webosEngineFsResolver.js";
+import { TizenStreamingServerResolver } from "../../../core/p2p/tizenStreamingServerResolver.js";
+import { requestWebOsCompanionService, subscribeWebOsCompanionService } from "../../../platform/webos/webosCompanionService.js";
 
 const CLOCK_FORMATTER_CACHE = new Map();
 const LANGUAGE_DISPLAY_NAME_CACHE = new Map();
+
+function logEngineFsDebug(...args) {
+  if (globalThis.__NUVIO_DEBUG_ENGINEFS__) {
+    console.info(...args);
+  }
+}
+
 const AUDIO_TRACK_LANGUAGE_KEY_BY_CODE = {
   ar: "common.arabic",
   de: "common.german",
@@ -1033,11 +1043,14 @@ function flattenStreamGroups(streamResult) {
         description: stream.description || stream.name || "",
         addonName,
         addonLogo: group.addonLogo || stream.addonLogo || null,
-        sourceType: stream.type || stream.source || "",
+        mimeType: stream.mimeType || stream.raw?.mimeType || stream.type || stream.source || null,
+        sourceType: stream.sourceType || stream.mimeType || stream.type || stream.source || "",
         url: stream.url || stream.externalUrl || "",
         ytId: stream.ytId || null,
         infoHash: stream.infoHash || null,
         fileIdx: stream.fileIdx ?? null,
+        engineFs: stream.engineFs || stream.raw?.engineFs || null,
+        tizenP2p: stream.tizenP2p || stream.raw?.tizenP2p || null,
         externalUrl: stream.externalUrl || null,
         behaviorHints: stream.behaviorHints || null,
         sources: Array.isArray(stream.sources) ? stream.sources : [],
@@ -1051,7 +1064,11 @@ function flattenStreamGroups(streamResult) {
           : Number(group.addonOrderIndex ?? Number.MAX_SAFE_INTEGER),
         raw: stream
       };
-      if (DirectDebridResolver.shouldListStream(entry)) {
+      if (
+        DirectDebridResolver.shouldListStream(entry)
+        || WebOsEngineFsResolver.canResolveStream(entry)
+        || TizenStreamingServerResolver.canResolveStream(entry)
+      ) {
         flattened.push(entry);
       }
     });
@@ -1242,7 +1259,8 @@ export const PlayerScreen = {
     ];
 
     this.streamCandidates = this.normalizeStreamCandidates(Array.isArray(params.streamCandidates) ? params.streamCandidates : []);
-    const initialStreamUrl = params.streamUrl || this.selectBestStreamUrl(this.streamCandidates) || null;
+    const initialStreamCandidate = this.selectBestStreamCandidate(this.streamCandidates);
+    const initialStreamUrl = params.streamUrl || initialStreamCandidate?.url || null;
     if (!this.streamCandidates.length && initialStreamUrl) {
       this.streamCandidates = this.normalizeStreamCandidates([
         {
@@ -1257,6 +1275,8 @@ export const PlayerScreen = {
     if (this.currentStreamIndex < 0) {
       this.currentStreamIndex = 0;
     }
+    this.currentEngineFsStream = null;
+    this.engineFsCleanupInFlight = new Set();
 
     this.subtitles = [];
     this.embeddedSubtitleTracks = [];
@@ -1396,6 +1416,15 @@ export const PlayerScreen = {
     this.failedPlaybackUrls = new Set();
     this.failedPlaybackStreamIds = new Set();
     this.playbackStallTimer = null;
+    this.engineFsStartupRetryTimer = null;
+    this.engineFsStartupErrorRetries = 0;
+    this.engineFsStallExtensions = 0;
+    this.lastEngineFsStallStats = null;
+    this.lastEngineFsStartupErrorStats = null;
+    this.engineFsKeepAliveHandle = null;
+    this.engineFsKeepAliveToken = "";
+    this.engineFsRemovalRequests = new Map();
+    this.playerExitCleanupHandler = null;
     this.lastPlaybackProgressAt = Date.now();
     this.hasPresentedPlaybackFrame = false;
 
@@ -1434,6 +1463,7 @@ export const PlayerScreen = {
     this.audioMediaSource = null;
 
     this.renderPlayerUi();
+    this.bindPlayerExitCleanup();
     this.pauseOverlayMeta = this.buildPauseOverlayMeta();
     if (!this.isExternalFrameMode()) {
       this.bindVideoEvents();
@@ -1453,11 +1483,29 @@ export const PlayerScreen = {
     if (initialStreamUrl && !this.isExternalFrameMode()) {
       const sourceCandidate = this.getStreamCandidateByUrl(initialStreamUrl) || this.getCurrentStreamCandidate();
       this.activePlaybackUrl = initialStreamUrl;
-      this.enableStartupAudioGate();
+      this.currentEngineFsStream = this.getEngineFsStateForStream(sourceCandidate);
+      if (this.currentEngineFsStream) {
+        this.releaseStartupAudioGate({ resume: false });
+        this.startEngineFsKeepAlive(this.currentEngineFsStream);
+      } else {
+        this.enableStartupAudioGate();
+      }
       PlayerController.play(this.activePlaybackUrl, this.buildPlaybackContext(sourceCandidate));
       this.loadManifestTrackDataForCurrentStream(this.activePlaybackUrl);
       this.startTrackDiscoveryWindow();
       this.schedulePlaybackStallGuard();
+    } else if (!this.isExternalFrameMode()) {
+      const sourceCandidate = initialStreamCandidate || this.getCurrentStreamCandidate();
+      if (
+        sourceCandidate
+        && (
+          DirectDebridResolver.canResolveStream(sourceCandidate)
+          || WebOsEngineFsResolver.canResolveStream(sourceCandidate)
+          || TizenStreamingServerResolver.canResolveStream(sourceCandidate)
+        )
+      ) {
+        void this.playStreamCandidate(sourceCandidate);
+      }
     }
 
     if (!this.isExternalFrameMode()) {
@@ -1490,7 +1538,10 @@ export const PlayerScreen = {
       streamCandidate?.raw?.mimeType,
       streamCandidate?.mimeType,
       streamCandidate?.sampleMimeType,
+      streamCandidate?.engineFs?.mimeType,
+      streamCandidate?.raw?.engineFs?.mimeType,
       streamCandidate?.sourceType,
+      streamCandidate?.raw?.sourceType,
       streamCandidate?.raw?.type
     ];
     for (const value of declaredTypes) {
@@ -1953,11 +2004,14 @@ export const PlayerScreen = {
         description: stream.description || stream.name || "",
         addonName: stream.addonName || stream.sourceName || "Addon",
         addonLogo: stream.addonLogo || null,
-        sourceType: stream.type || stream.source || "",
+        mimeType: stream.mimeType || stream.raw?.mimeType || stream.type || stream.source || null,
+        sourceType: stream.sourceType || stream.mimeType || stream.type || stream.source || "",
         url: streamUrl,
         ytId: stream.ytId || null,
         infoHash: stream.infoHash || null,
         fileIdx: stream.fileIdx ?? null,
+        engineFs: stream.engineFs || stream.raw?.engineFs || null,
+        tizenP2p: stream.tizenP2p || stream.raw?.tizenP2p || null,
         externalUrl: stream.externalUrl || null,
         behaviorHints: stream.behaviorHints || null,
         sources: Array.isArray(stream.sources) ? stream.sources : [],
@@ -1968,7 +2022,11 @@ export const PlayerScreen = {
         subtitles: Array.isArray(stream.subtitles) ? stream.subtitles : [],
         raw: stream
       };
-      return DirectDebridResolver.shouldListStream(entry) ? entry : null;
+      return (
+        DirectDebridResolver.shouldListStream(entry)
+        || WebOsEngineFsResolver.canResolveStream(entry)
+        || TizenStreamingServerResolver.canResolveStream(entry)
+      ) ? entry : null;
     }).filter(Boolean);
   },
 
@@ -2027,6 +2085,302 @@ export const PlayerScreen = {
       return null;
     }
     return this.streamCandidates.find((entry) => String(entry?.url || "").trim() === normalized) || null;
+  },
+
+  getEngineFsStateForStream(streamCandidate = null) {
+    if (Environment.isWebOS()) {
+      const state = WebOsEngineFsResolver.getResolvedStreamState(streamCandidate || {});
+      if (state) {
+        return state;
+      }
+    } else if (Environment.isTizen()) {
+      const state = TizenStreamingServerResolver.getResolvedStreamState(streamCandidate || {});
+      if (state) {
+        return state;
+      }
+    } else {
+      return null;
+    }
+    const playbackUrl = String(streamCandidate?.url || streamCandidate?.externalUrl || streamCandidate || "").trim();
+    if (!playbackUrl) {
+      return null;
+    }
+    try {
+      const parsed = new URL(playbackUrl);
+      const match = parsed.pathname.match(/\/([0-9a-f]{40})\/(-?\d+)(?:\/|$)/i);
+      if (!match) {
+        return null;
+      }
+      const fileIdx = Number(match[2]);
+      return {
+        kind: Environment.isTizen() ? "tizen-streaming-server" : "webos-enginefs",
+        infoHash: String(match[1] || "").toLowerCase(),
+        fileIdx: Number.isFinite(fileIdx) ? fileIdx : -1,
+        playbackUrl,
+        mimeType: String(streamCandidate?.mimeType || streamCandidate?.sourceType || "").trim() || null,
+        baseUrlKind: parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1"
+          ? "local-service"
+          : "public-service",
+        publicPlaybackUrl: String(streamCandidate?.engineFs?.publicPlaybackUrl || streamCandidate?.raw?.engineFs?.publicPlaybackUrl || "").trim() || null,
+        baseUrl: `${parsed.protocol}//${parsed.host}`
+      };
+    } catch (_) {
+      return null;
+    }
+  },
+
+  engineFsStateKey(state = null) {
+    return state?.infoHash ? `${state.infoHash}:${state.fileIdx ?? -1}` : "";
+  },
+
+  isSameEngineFsState(a = null, b = null) {
+    return Boolean(a && b && this.engineFsStateKey(a) === this.engineFsStateKey(b));
+  },
+
+  engineFsCleanupKey(state = null) {
+    return state?.infoHash ? String(state.infoHash).toLowerCase() : "";
+  },
+
+  isExpectedEngineFsCleanupError(value = "") {
+    const text = String(
+      typeof value === "object" && value
+        ? value.detail || value.errorText || value.message || value.status || ""
+        : value || ""
+    ).toLowerCase();
+    return (
+      text.includes("message not processed")
+      || text.includes("connection refused")
+      || text.includes("econnrefused")
+      || text.includes("failed to fetch")
+      || text.includes("network error")
+      || text.includes("not found")
+      || text.includes("404")
+      || text.includes("unavailable")
+      || text.includes("timed out")
+    );
+  },
+
+  async cleanupEngineFsState(state = null, reason = "cleanup") {
+    const target = state?.infoHash ? state : null;
+    if (!target) {
+      return false;
+    }
+    const key = this.engineFsCleanupKey(target);
+    const existing = this.engineFsRemovalRequests.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const removalPromise = (async () => {
+      try {
+        const result = target.kind === "tizen-streaming-server"
+          ? await TizenStreamingServerResolver.remove(target.infoHash, { baseUrl: target.baseUrl, timeoutMs: 2500 })
+          : await WebOsEngineFsResolver.remove(target.infoHash, { timeoutMs: 2500 });
+        if (result?.status === "success") {
+          logEngineFsDebug("EngineFS torrent removed", {
+            reason,
+            infoHash: target.infoHash,
+            fileIdx: target.fileIdx
+          });
+          return true;
+        }
+        if (result?.status === "unsupported" || result?.status === "unavailable") {
+          logEngineFsDebug("EngineFS torrent remove unavailable", {
+            reason,
+            infoHash: target.infoHash,
+            fileIdx: target.fileIdx,
+            status: result.status
+          });
+          return false;
+        }
+        if (this.isExpectedEngineFsCleanupError(result)) {
+          logEngineFsDebug("EngineFS torrent remove ignored", {
+            reason,
+            infoHash: target.infoHash,
+            fileIdx: target.fileIdx,
+            result
+          });
+          return false;
+        }
+        logEngineFsDebug("EngineFS torrent remove failed", {
+          reason,
+          infoHash: target.infoHash,
+          fileIdx: target.fileIdx,
+          result
+        });
+        return false;
+      } catch (error) {
+        if (this.isExpectedEngineFsCleanupError(error)) {
+          logEngineFsDebug("EngineFS torrent remove ignored", {
+            reason,
+            infoHash: target.infoHash,
+            fileIdx: target.fileIdx,
+            error
+          });
+          return false;
+        }
+        logEngineFsDebug("EngineFS torrent remove threw", {
+          reason,
+          infoHash: target.infoHash,
+          fileIdx: target.fileIdx,
+          error
+        });
+        return false;
+      }
+    })();
+
+    this.engineFsRemovalRequests.set(key, removalPromise);
+    try {
+      return await removalPromise;
+    } finally {
+      if (this.engineFsRemovalRequests.get(key) === removalPromise) {
+        this.engineFsRemovalRequests.delete(key);
+      }
+    }
+  },
+
+  startEngineFsKeepAlive(state = this.currentEngineFsStream) {
+    if (!state?.infoHash) {
+      return;
+    }
+    if (state.kind === "tizen-streaming-server") {
+      this.stopEngineFsKeepAlive();
+      logEngineFsDebug("EngineFS keepalive skipped for Tizen local service", {
+        infoHash: state.infoHash,
+        fileIdx: state.fileIdx
+      });
+      return;
+    }
+    const token = `${state.infoHash}:${state.fileIdx ?? -1}:${Date.now()}`;
+    this.stopEngineFsKeepAlive();
+    this.engineFsKeepAliveToken = token;
+    try {
+      this.engineFsKeepAliveHandle = subscribeWebOsCompanionService({
+        method: "enginefsKeepAlive",
+        parameters: {
+          token,
+          infoHash: state.infoHash,
+          fileIdx: state.fileIdx,
+          intervalMs: 8000
+        },
+        onSuccess: (payload) => {
+          if (payload?.settingsReachable === false) {
+            logEngineFsDebug("EngineFS keepalive reports runtime unavailable", {
+              token,
+              payload
+            });
+          }
+        },
+        onFailure: (error) => {
+          console.warn("EngineFS keepalive failed", {
+            token,
+            error
+          });
+        }
+      });
+      logEngineFsDebug("EngineFS keepalive started", {
+        token,
+        infoHash: state.infoHash,
+        fileIdx: state.fileIdx
+      });
+    } catch (error) {
+      console.warn("EngineFS keepalive could not start", {
+        token,
+        error
+      });
+    }
+  },
+
+  stopEngineFsKeepAlive() {
+    const token = String(this.engineFsKeepAliveToken || "").trim();
+    if (this.engineFsKeepAliveHandle) {
+      try {
+        this.engineFsKeepAliveHandle.cancel?.();
+      } catch (_) {
+        // Ignore local cancellation failures.
+      }
+      this.engineFsKeepAliveHandle = null;
+    }
+    if (token) {
+      requestWebOsCompanionService({
+        method: "enginefsKeepAliveStop",
+        parameters: { token }
+      }).catch(() => null);
+    }
+    this.engineFsKeepAliveToken = "";
+  },
+
+  async releaseCurrentEngineFsStream(reason = "cleanup", { removeTorrent = false } = {}) {
+    const current = this.currentEngineFsStream;
+    if (!current) {
+      return;
+    }
+    this.stopEngineFsKeepAlive();
+    this.clearPlaybackStallGuard();
+    if (this.engineFsStartupRetryTimer) {
+      clearTimeout(this.engineFsStartupRetryTimer);
+      this.engineFsStartupRetryTimer = null;
+    }
+    this.engineFsStartupErrorRetries = 0;
+    this.lastEngineFsStartupErrorStats = null;
+    this.lastEngineFsStallStats = null;
+    this.engineFsStallExtensions = 0;
+    this.currentEngineFsStream = null;
+    if (!removeTorrent || !current.infoHash) {
+      return;
+    }
+    await this.cleanupEngineFsState(current, reason);
+  },
+
+  releaseCurrentEngineFsStreamBestEffort(reason = "cleanup", { removeTorrent = false } = {}) {
+    const current = this.currentEngineFsStream;
+    if (!current) {
+      return;
+    }
+    void this.releaseCurrentEngineFsStream(reason, { removeTorrent }).catch(() => null);
+  },
+
+  sendEngineFsRemoveOnPageExit(state = null) {
+    const target = state?.infoHash ? state : this.currentEngineFsStream;
+    if (!target?.infoHash) {
+      return;
+    }
+    const playbackUrl = String(target.playbackUrl || target.publicPlaybackUrl || this.activePlaybackUrl || "").trim();
+    if (!playbackUrl) {
+      return;
+    }
+    try {
+      const parsed = new URL(playbackUrl);
+      const removeUrl = `${parsed.origin}/${encodeURIComponent(String(target.infoHash).toLowerCase())}/remove`;
+      fetch(removeUrl, {
+        method: "GET",
+        cache: "no-cache",
+        keepalive: true
+      }).catch(() => null);
+    } catch (_) {
+      // Page-exit cleanup is best-effort; normal Luna cleanup still follows.
+    }
+  },
+
+  bindPlayerExitCleanup() {
+    this.unbindPlayerExitCleanup();
+    this.playerExitCleanupHandler = () => {
+      this.sendEngineFsRemoveOnPageExit();
+      this.releaseCurrentEngineFsStreamBestEffort("player-exit", { removeTorrent: true });
+    };
+    window.addEventListener("pagehide", this.playerExitCleanupHandler);
+    window.addEventListener("beforeunload", this.playerExitCleanupHandler);
+    document.addEventListener("nuvio:beforeExitApp", this.playerExitCleanupHandler);
+  },
+
+  unbindPlayerExitCleanup() {
+    if (!this.playerExitCleanupHandler) {
+      return;
+    }
+    window.removeEventListener("pagehide", this.playerExitCleanupHandler);
+    window.removeEventListener("beforeunload", this.playerExitCleanupHandler);
+    document.removeEventListener("nuvio:beforeExitApp", this.playerExitCleanupHandler);
+    this.playerExitCleanupHandler = null;
   },
 
   getTrackProbeUrl() {
@@ -2656,6 +3010,9 @@ export const PlayerScreen = {
   },
 
   promoteHlsManifestSubtitlePlayback(manifestUrl = this.manifestMasterUrl) {
+    if (Environment.isTizen()) {
+      return false;
+    }
     const targetUrl = String(manifestUrl || this.activePlaybackUrl || "").trim();
     if (!targetUrl || !this.manifestSubtitleTracks.length) {
       return false;
@@ -3569,6 +3926,7 @@ export const PlayerScreen = {
     if (!this.params?.itemId && !this.params?.videoId) {
       return false;
     }
+    this.releaseCurrentEngineFsStreamBestEffort("back-to-stream", { removeTorrent: true });
     void Router.navigate("stream", this.buildStreamRouteParamsFromPlayer(), {
       skipStackPush: true,
       replaceHistory: true
@@ -3749,6 +4107,7 @@ export const PlayerScreen = {
 
     try {
       await PlayerController.stop();
+      await this.releaseCurrentEngineFsStream("next-episode", { removeTorrent: true });
       const streamItems = await this.getPlayableStreamsForVideo(nextEpisode.videoId, itemType);
       if (!streamItems.length) {
         this.nextEpisodeLaunching = false;
@@ -3765,9 +4124,10 @@ export const PlayerScreen = {
         return;
       }
       const currentAddonName = this.getCurrentStreamCandidate()?.addonName || "";
-      const bestStream = this.selectBestStreamUrlForAddon(streamItems, currentAddonName)
-        || this.selectBestStreamUrl(streamItems)
-        || streamItems[0].url;
+      const bestStreamCandidate = this.selectBestStreamCandidateForAddon(streamItems, currentAddonName)
+        || this.selectBestStreamCandidate(streamItems)
+        || streamItems[0];
+      const bestStream = bestStreamCandidate?.url || bestStreamCandidate?.externalUrl || null;
       await PlayerController.flushCurrentProgress({ forceCloudSync: true });
       Router.navigate("player", {
         streamUrl: bestStream,
@@ -4275,6 +4635,15 @@ export const PlayerScreen = {
 
     const onPlaying = () => {
       this.seekLoading = false;
+      if (this.currentEngineFsStream && !this.hasPresentedPlaybackFrame) {
+        this.lastPlaybackErrorAt = 0;
+        this.sourcesError = "";
+        this.paused = false;
+        this.updateMediaSessionPlaybackState();
+        this.schedulePlaybackStallGuard({ timeoutMs: 12000 });
+        this.updateUiTick();
+        return;
+      }
       if (this.startupAudioGateActive) {
         this.paused = false;
         this.startupTrackPreferenceReady = true;
@@ -4334,6 +4703,13 @@ export const PlayerScreen = {
     };
 
     const onTimeUpdate = () => {
+      if (this.currentEngineFsStream && !this.hasPresentedPlaybackFrame && this.getPlaybackCurrentSeconds() > 0.2) {
+        this.hasPresentedPlaybackFrame = true;
+        this.loadingVisible = false;
+        this.releaseStartupAudioGate();
+        this.clearPlaybackStallGuard();
+        this.updateLoadingVisibility();
+      }
       this.markPlaybackProgress();
       this.attemptPendingPlaybackRestore();
       this.updateUiTick();
@@ -4379,7 +4755,7 @@ export const PlayerScreen = {
       }
     };
 
-    const onError = (event) => {
+    const onError = async (event) => {
       this.seekLoading = false;
       const now = Date.now();
       if ((now - Number(this.lastPlaybackErrorAt || 0)) < 120) {
@@ -4392,9 +4768,73 @@ export const PlayerScreen = {
         ? Number(PlayerController.getLastPlaybackErrorCode() || 0)
         : 0;
       const mediaErrorCode = detailErrorCode || Number(video?.error?.code || 0) || controllerErrorCode;
+      const avplayError = String(event?.detail?.avplayError || "").toLowerCase();
+      const currentEngineFsState = this.currentEngineFsStream || null;
+      const publicEngineFsUrl = String(currentEngineFsState?.publicPlaybackUrl || "").trim();
+      const isLocalEngineFsNetworkFailure = currentEngineFsState?.baseUrlKind === "local-service"
+        && publicEngineFsUrl
+        && publicEngineFsUrl !== this.activePlaybackUrl
+        && (
+          mediaErrorCode === 2
+          || avplayError.includes("connection refused")
+          || avplayError.includes("network")
+          || avplayError.includes("failed")
+        );
+      if (!this.hasPresentedPlaybackFrame && isLocalEngineFsNetworkFailure) {
+        const sourceCandidate = this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
+        const engineFs = {
+          ...(sourceCandidate?.engineFs || currentEngineFsState),
+          playbackUrl: publicEngineFsUrl,
+          publicPlaybackUrl: publicEngineFsUrl,
+          baseUrlKind: "public-fallback"
+        };
+        if (sourceCandidate) {
+          Object.assign(sourceCandidate, {
+            url: publicEngineFsUrl,
+            externalUrl: null,
+            engineFs,
+            raw: {
+              ...(sourceCandidate.raw || {}),
+              engineFs
+            }
+          });
+          this.streamCandidates = this.streamCandidates.map((entry) => (
+            entry.id === sourceCandidate.id ? { ...entry, ...sourceCandidate } : entry
+          ));
+        }
+        this.lastPlaybackErrorAt = 0;
+        this.loadingVisible = true;
+        this.paused = false;
+        this.sourcesError = null;
+        this.currentEngineFsStream = engineFs;
+        this.updateLoadingVisibility();
+        console.warn("EngineFS local playback failed; switching to public playback URL", {
+          fromBaseUrlKind: currentEngineFsState.baseUrlKind,
+          playbackUrl: publicEngineFsUrl,
+          mediaErrorCode,
+          avplayError
+        });
+        void this.playStreamByUrl(publicEngineFsUrl, {
+          preservePanel: true,
+          resetSilentAudioState: false,
+          sourceCandidate: sourceCandidate || {
+            url: publicEngineFsUrl,
+            engineFs
+          }
+        });
+        return;
+      }
 
-      this.markPlaybackSourceFailed(this.activePlaybackUrl);
       if (!this.hasPresentedPlaybackFrame && (mediaErrorCode === 3 || mediaErrorCode === 4)) {
+        if (currentEngineFsState) {
+          const stats = await this.fetchCurrentEngineFsStats({ timeoutMs: 2500 });
+          if (this.shouldRetryEngineFsStartupError(stats)) {
+            this.scheduleEngineFsStartupRetry({ mediaErrorCode, stats });
+            return;
+          }
+        }
+
+        this.markPlaybackSourceFailed(this.activePlaybackUrl);
         const targetEngine = typeof PlayerController.getAlternativePlaybackEngine === "function"
           ? PlayerController.getAlternativePlaybackEngine(this.activePlaybackUrl)
           : null;
@@ -4418,7 +4858,9 @@ export const PlayerScreen = {
           return;
         }
 
-        const fallbackCandidate = this.findStartupPlaybackFallbackCandidate();
+        const fallbackCandidate = currentEngineFsState
+          ? null
+          : this.findStartupPlaybackFallbackCandidate();
         if (fallbackCandidate) {
           this.lastPlaybackErrorAt = 0;
           this.loadingVisible = true;
@@ -4438,6 +4880,8 @@ export const PlayerScreen = {
         }
       }
 
+      this.markPlaybackSourceFailed(this.activePlaybackUrl);
+
       this.clearPlaybackStallGuard();
       this.releaseStartupAudioGate({ resume: false });
       this.loadingVisible = false;
@@ -4446,7 +4890,16 @@ export const PlayerScreen = {
       this.updateLoadingVisibility();
       this.setControlsVisible(true, { focus: false });
       this.sourcesError = `${this.mediaErrorMessage(mediaErrorCode)}. Choose another source manually.`;
-      if (this.streamCandidates.length > 1) {
+      if (this.currentEngineFsStream) {
+        logEngineFsDebug("EngineFS playback failed; keeping torrent alive until player exit or source change", {
+          reason: "playback-error",
+          infoHash: this.currentEngineFsStream.infoHash,
+          fileIdx: this.currentEngineFsStream.fileIdx
+        });
+      }
+      if (this.currentEngineFsStream) {
+        this.renderSourcesPanel();
+      } else if (this.streamCandidates.length > 1) {
         this.openSourcesPanel();
       } else {
         this.renderSourcesPanel();
@@ -4734,6 +5187,9 @@ export const PlayerScreen = {
   },
 
   isPlaybackStartupSettled() {
+    if (this.currentEngineFsStream && !this.hasPresentedPlaybackFrame) {
+      return false;
+    }
     const avplayReadyBehindGate = Boolean(
       this.startupAudioGateActive
       && typeof PlayerController.isUsingAvPlay === "function"
@@ -5407,7 +5863,7 @@ export const PlayerScreen = {
     }
   },
 
-  async playStreamByUrl(streamUrl, { preservePanel = false, resetSilentAudioState = true, preservePlaybackState = false, forceEngine = null } = {}) {
+  async playStreamByUrl(streamUrl, { preservePanel = false, resetSilentAudioState = true, preservePlaybackState = false, forceEngine = null, sourceCandidate: explicitSourceCandidate = null } = {}) {
     if (this.isExternalFrameMode()) {
       return;
     }
@@ -5419,11 +5875,31 @@ export const PlayerScreen = {
     if (selectedIndex >= 0) {
       this.currentStreamIndex = selectedIndex;
     }
+    const sourceCandidate = explicitSourceCandidate || this.getStreamCandidateByUrl(streamUrl) || this.getCurrentStreamCandidate();
+    const nextEngineFsState = this.getEngineFsStateForStream(sourceCandidate);
+    const sameEngineFsState = this.isSameEngineFsState(this.currentEngineFsStream, nextEngineFsState);
+    if (this.currentEngineFsStream && !this.isSameEngineFsState(this.currentEngineFsStream, nextEngineFsState)) {
+      const removePreviousTorrent = !nextEngineFsState
+        || String(this.currentEngineFsStream.infoHash || "").toLowerCase() !== String(nextEngineFsState.infoHash || "").toLowerCase();
+      await this.releaseCurrentEngineFsStream("source-change", { removeTorrent: removePreviousTorrent });
+    }
+    if (!sameEngineFsState) {
+      if (this.engineFsStartupRetryTimer) {
+        clearTimeout(this.engineFsStartupRetryTimer);
+        this.engineFsStartupRetryTimer = null;
+      }
+      this.engineFsStartupErrorRetries = 0;
+      this.lastEngineFsStartupErrorStats = null;
+    }
 
     this.hasPresentedPlaybackFrame = false;
     this.loadingVisible = true;
     this.updateLoadingVisibility();
-    this.enableStartupAudioGate();
+    if (nextEngineFsState) {
+      this.releaseStartupAudioGate({ resume: false });
+    } else {
+      this.enableStartupAudioGate();
+    }
     this.cancelSeekPreview({ commit: false });
     if (preservePlaybackState) {
       const restoreTimeSeconds = this.getPlaybackCurrentSeconds();
@@ -5470,21 +5946,30 @@ export const PlayerScreen = {
     this.clearMountedExternalSubtitleTracks();
     this.trackDiscoveryInProgress = true;
     this.clearTrackDiscoveryTimer();
-    const sourceCandidate = this.getStreamCandidateByUrl(streamUrl) || this.getCurrentStreamCandidate();
     this.activePlaybackUrl = streamUrl;
+    this.currentEngineFsStream = nextEngineFsState || null;
+    if (this.currentEngineFsStream) {
+      this.startEngineFsKeepAlive(this.currentEngineFsStream);
+    } else {
+      this.stopEngineFsKeepAlive();
+    }
     this.embeddedTrackRequestPromise = null;
     this.embeddedTrackRequestUrl = "";
     this.lastEmbeddedTrackProbeUrl = "";
     this.lastEmbeddedTrackRetryAt = 0;
     this.lastTrackWarmupAt = Date.now();
-    const embeddedSubtitleWarmupPromise = this.loadEmbeddedSubtitleTracks();
-    this.initialEmbeddedTrackBootstrapPromise = embeddedSubtitleWarmupPromise;
-    embeddedSubtitleWarmupPromise.finally(() => {
-      if (this.initialEmbeddedTrackBootstrapPromise === embeddedSubtitleWarmupPromise) {
-        this.initialEmbeddedTrackBootstrapPromise = null;
-      }
-    });
-    await this.waitForInitialEmbeddedTrackBootstrap();
+    if (this.currentEngineFsStream) {
+      this.initialEmbeddedTrackBootstrapPromise = null;
+    } else {
+      const embeddedSubtitleWarmupPromise = this.loadEmbeddedSubtitleTracks();
+      this.initialEmbeddedTrackBootstrapPromise = embeddedSubtitleWarmupPromise;
+      embeddedSubtitleWarmupPromise.finally(() => {
+        if (this.initialEmbeddedTrackBootstrapPromise === embeddedSubtitleWarmupPromise) {
+          this.initialEmbeddedTrackBootstrapPromise = null;
+        }
+      });
+      await this.waitForInitialEmbeddedTrackBootstrap();
+    }
     this.updateModalBackdrop();
     this.renderSubtitleDialog();
     this.renderAudioDialog();
@@ -5509,31 +5994,80 @@ export const PlayerScreen = {
     }
     let targetUrl = streamCandidate.url || streamCandidate.externalUrl || "";
     if (!targetUrl) {
-      const result = await DirectDebridResolver.resolve(streamCandidate, {
+      const resolveContext = {
         season: this.params?.season == null ? null : Number(this.params.season),
         episode: this.params?.episode == null ? null : Number(this.params.episode)
-      });
-      if (result.status !== "success" || !result.stream?.url) {
-        this.sourcesError = result.status === "not_cached"
-          ? t("stream.debrid.notCached", {}, "Not cached on this service.")
-          : result.status === "stale"
-              ? t("stream.debrid.stale", {}, "This Debrid result expired. Refreshing streams.")
-              : t("stream.debrid.failed", {}, "Could not resolve this Debrid stream.");
+      };
+      const canUseEngineFs = WebOsEngineFsResolver.canResolveStream(streamCandidate);
+      const canUseTizenP2p = TizenStreamingServerResolver.canResolveStream(streamCandidate);
+      const canUseP2p = canUseEngineFs || canUseTizenP2p;
+      let fallbackError = "";
+
+      if (DirectDebridResolver.canResolveStream(streamCandidate, resolveContext)) {
+        const result = await DirectDebridResolver.resolve(streamCandidate, resolveContext);
+        if (result.status === "success" && result.stream?.url) {
+          targetUrl = result.stream.url;
+          Object.assign(streamCandidate, {
+            url: targetUrl,
+            externalUrl: null,
+            mimeType: result.stream.mimeType || streamCandidate.mimeType,
+            sourceType: result.stream.sourceType || streamCandidate.sourceType,
+            behaviorHints: result.stream.behaviorHints || streamCandidate.behaviorHints,
+            raw: { ...(streamCandidate.raw || {}), ...(result.stream.raw || {}) }
+          });
+        } else {
+          fallbackError = result.status === "not_cached"
+            ? t("stream.debrid.notCached", {}, "Not cached on this service.")
+            : result.status === "stale"
+                ? t("stream.debrid.stale", {}, "This Debrid result expired. Refreshing streams.")
+                : t("stream.debrid.failed", {}, "Could not resolve this Debrid stream.");
+        }
+      }
+
+      if (!targetUrl && canUseP2p) {
+        const result = canUseEngineFs
+          ? await WebOsEngineFsResolver.resolve(streamCandidate, resolveContext)
+          : await TizenStreamingServerResolver.resolve(streamCandidate, resolveContext);
+        if (result.status === "success" && result.stream?.url) {
+          targetUrl = result.stream.url;
+          Object.assign(streamCandidate, {
+            url: targetUrl,
+            externalUrl: null,
+            infoHash: result.stream.infoHash || streamCandidate.infoHash,
+            fileIdx: result.stream.fileIdx ?? streamCandidate.fileIdx,
+            engineFs: result.stream.engineFs || streamCandidate.engineFs || null,
+            tizenP2p: result.stream.tizenP2p || streamCandidate.tizenP2p || null,
+            mimeType: result.stream.mimeType || streamCandidate.mimeType,
+            sourceType: result.stream.sourceType || streamCandidate.sourceType,
+            behaviorHints: result.stream.behaviorHints || streamCandidate.behaviorHints,
+            raw: { ...(streamCandidate.raw || {}), ...(result.stream.raw || {}) }
+          });
+        } else {
+          console.warn("PlayerScreen: P2P resolve failed", {
+            status: result.status,
+            detail: result.detail || "",
+            infoHash: streamCandidate.infoHash || streamCandidate.raw?.infoHash || streamCandidate.clientResolve?.infoHash || streamCandidate.raw?.clientResolve?.infoHash || "",
+            fileIdx: streamCandidate.fileIdx ?? streamCandidate.raw?.fileIdx ?? null
+          });
+        }
+      }
+
+      if (!targetUrl) {
+        this.sourcesError = canUseP2p
+          ? t("stream.p2p.failed", {}, "Could not start this torrent stream.")
+          : (fallbackError || t("stream.debrid.unavailable", {}, "This Debrid source needs a configured Debrid account."));
         this.renderSourcesPanel();
         return;
       }
-      targetUrl = result.stream.url;
-      Object.assign(streamCandidate, {
-        url: targetUrl,
-        externalUrl: null,
-        behaviorHints: result.stream.behaviorHints || streamCandidate.behaviorHints,
-        raw: result.stream.raw || streamCandidate.raw
-      });
+
       this.streamCandidates = this.streamCandidates.map((entry) => (
         entry.id === streamCandidate.id ? { ...entry, ...streamCandidate } : entry
       ));
     }
-    await this.playStreamByUrl(targetUrl, options);
+    await this.playStreamByUrl(targetUrl, {
+      ...options,
+      sourceCandidate: streamCandidate
+    });
   },
 
   async switchStream(direction) {
@@ -5593,7 +6127,7 @@ export const PlayerScreen = {
       if (candidateUrl || DirectDebridResolver.canResolveStream(candidate, {
         season: this.params?.season == null ? null : Number(this.params.season),
         episode: this.params?.episode == null ? null : Number(this.params.episode)
-      })) {
+      }) || WebOsEngineFsResolver.canResolveStream(candidate) || TizenStreamingServerResolver.canResolveStream(candidate)) {
         return candidate;
       }
     }
@@ -5623,6 +6157,196 @@ export const PlayerScreen = {
 
   markPlaybackProgress() {
     this.lastPlaybackProgressAt = Date.now();
+    this.engineFsStallExtensions = 0;
+    this.lastEngineFsStallStats = null;
+  },
+
+  getCurrentEngineFsStatsUrl() {
+    const state = this.currentEngineFsStream || null;
+    const playbackUrl = String(state?.playbackUrl || this.activePlaybackUrl || "").trim();
+    const infoHash = String(state?.infoHash || "").trim().toLowerCase();
+    const fileIdx = Number(state?.fileIdx);
+    if (!playbackUrl || !/^[0-9a-f]{40}$/.test(infoHash) || !Number.isFinite(fileIdx) || fileIdx < 0) {
+      return "";
+    }
+    try {
+      const parsed = new URL(playbackUrl);
+      return `${parsed.origin}/${encodeURIComponent(infoHash)}/${String(fileIdx)}/stats.json`;
+    } catch (_) {
+      return "";
+    }
+  },
+
+  async fetchCurrentEngineFsStats({ timeoutMs = 3500 } = {}) {
+    const statsUrl = this.getCurrentEngineFsStatsUrl();
+    if (!statsUrl) {
+      return null;
+    }
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => controller.abort(), Math.max(250, Number(timeoutMs || 3500)))
+      : 0;
+    try {
+      const response = await fetch(statsUrl, {
+        cache: "no-cache",
+        signal: controller?.signal
+      });
+      if (!response || !response.ok) {
+        return null;
+      }
+      return await response.json().catch(() => null);
+    } catch (error) {
+      if (this.currentEngineFsStream) {
+        logEngineFsDebug("EngineFS stats unavailable; requesting runtime recovery", {
+          statsUrl,
+          error: String(error?.message || error || "")
+        });
+        try {
+          await requestWebOsCompanionService({ method: "status", parameters: {} });
+        } catch (_) {
+          // Recovery is best-effort; retry logic will decide the next step.
+        }
+      }
+      return null;
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  },
+
+  getEngineFsStallSnapshot(stats = null) {
+    if (!stats || typeof stats !== "object") {
+      return null;
+    }
+    const readNumber = (keys = [], fallback = 0) => {
+      for (const key of keys) {
+        const parsed = Number(stats[key]);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+      return fallback;
+    };
+    const progress = readNumber(["streamProgress", "progress"], -1);
+    const downloaded = readNumber(["downloaded", "downloadedBytes"], -1);
+    const downloadSpeed = readNumber(["downloadSpeed", "speed"], 0);
+    const peers = readNumber(["peerCount", "peers"], 0);
+    const unique = readNumber(["uniquePeerCount", "unique"], 0);
+    const connectionTries = readNumber(["connectionTries", "tries"], 0);
+    return {
+      progress,
+      downloaded,
+      downloadSpeed,
+      peers,
+      unique,
+      connectionTries,
+      peerSearchRunning: Boolean(stats.peerSearchRunning ?? stats.peerSearch),
+      streamName: String(stats.streamName || "")
+    };
+  },
+
+  shouldDeferEngineFsStartupStall(stats = null) {
+    const snapshot = this.getEngineFsStallSnapshot(stats);
+    if (!snapshot) {
+      return false;
+    }
+    const previous = this.lastEngineFsStallStats || null;
+    this.lastEngineFsStallStats = snapshot;
+
+    const progressIncreased = previous
+      && snapshot.progress >= 0
+      && previous.progress >= 0
+      && snapshot.progress > previous.progress + 0.000001;
+    const downloadedIncreased = previous
+      && snapshot.downloaded >= 0
+      && previous.downloaded >= 0
+      && snapshot.downloaded > previous.downloaded;
+    const activelyDownloading = snapshot.downloadSpeed > 0 || progressIncreased || downloadedIncreased;
+    const swarmIsAlive = snapshot.peers > 0
+      || snapshot.unique > 0
+      || snapshot.connectionTries > 0
+      || snapshot.peerSearchRunning;
+
+    if (activelyDownloading) {
+      return true;
+    }
+    return swarmIsAlive && Number(this.engineFsStallExtensions || 0) < 10;
+  },
+
+  shouldRetryEngineFsStartupError(stats = null) {
+    const retryCount = Number(this.engineFsStartupErrorRetries || 0);
+    const snapshot = this.getEngineFsStallSnapshot(stats);
+    if (!snapshot) {
+      return retryCount < 3;
+    }
+
+    const previous = this.lastEngineFsStartupErrorStats || null;
+    this.lastEngineFsStartupErrorStats = snapshot;
+    const progressIncreased = previous
+      && snapshot.progress >= 0
+      && previous.progress >= 0
+      && snapshot.progress > previous.progress + 0.000001;
+    const downloadedIncreased = previous
+      && snapshot.downloaded >= 0
+      && previous.downloaded >= 0
+      && snapshot.downloaded > previous.downloaded;
+    const hasDownloadedData = snapshot.downloaded > 0;
+    const activelyDownloading = snapshot.downloadSpeed > 0 || progressIncreased || downloadedIncreased;
+    const swarmIsAlive = snapshot.peers > 0
+      || snapshot.unique > 0
+      || snapshot.connectionTries > 0
+      || snapshot.peerSearchRunning;
+
+    return retryCount < 10 && (activelyDownloading || hasDownloadedData || swarmIsAlive);
+  },
+
+  scheduleEngineFsStartupRetry({ mediaErrorCode = 0, stats = null } = {}) {
+    if (!this.currentEngineFsStream || !this.activePlaybackUrl) {
+      return false;
+    }
+    if (this.engineFsStartupRetryTimer) {
+      clearTimeout(this.engineFsStartupRetryTimer);
+      this.engineFsStartupRetryTimer = null;
+    }
+
+    this.engineFsStartupErrorRetries = Number(this.engineFsStartupErrorRetries || 0) + 1;
+    const retry = this.engineFsStartupErrorRetries;
+    const delayMs = Math.min(18000, 4500 + (retry * 2500));
+    const retryUrl = this.activePlaybackUrl;
+    const sourceCandidate = this.getStreamCandidateByUrl(retryUrl) || this.getCurrentStreamCandidate();
+    const snapshot = this.getEngineFsStallSnapshot(stats);
+
+    this.lastPlaybackErrorAt = 0;
+    this.loadingVisible = true;
+    this.paused = false;
+    this.sourcesError = null;
+    this.dismissPauseOverlay();
+    this.updateLoadingVisibility();
+    this.updateMediaSessionPlaybackState();
+    this.setControlsVisible(false, { focus: false });
+    this.schedulePlaybackStallGuard({ timeoutMs: delayMs + 12000 });
+
+    logEngineFsDebug("EngineFS startup decode error while buffering; retrying same source", {
+      retry,
+      delayMs,
+      mediaErrorCode,
+      playbackUrl: retryUrl,
+      stats: snapshot
+    });
+
+    this.engineFsStartupRetryTimer = setTimeout(() => {
+      this.engineFsStartupRetryTimer = null;
+      if (this.hasPresentedPlaybackFrame || this.activePlaybackUrl !== retryUrl || !this.currentEngineFsStream) {
+        return;
+      }
+      void this.playStreamByUrl(retryUrl, {
+        preservePanel: true,
+        resetSilentAudioState: false,
+        sourceCandidate
+      });
+    }, delayMs);
+    return true;
   },
 
   getPlaybackStallTimeoutMs({ startup = false } = {}) {
@@ -5642,14 +6366,16 @@ export const PlayerScreen = {
     return 9000;
   },
 
-  schedulePlaybackStallGuard() {
+  schedulePlaybackStallGuard({ timeoutMs: timeoutOverrideMs = null } = {}) {
     this.clearPlaybackStallGuard();
     if (this.isExternalFrameMode() || !this.activePlaybackUrl) {
       return;
     }
     const startup = !this.hasPresentedPlaybackFrame;
-    const timeoutMs = this.getPlaybackStallTimeoutMs({ startup });
-    this.playbackStallTimer = setTimeout(() => {
+    const timeoutMs = Number.isFinite(Number(timeoutOverrideMs)) && Number(timeoutOverrideMs) > 0
+      ? Number(timeoutOverrideMs)
+      : this.getPlaybackStallTimeoutMs({ startup });
+    this.playbackStallTimer = setTimeout(async () => {
       this.playbackStallTimer = null;
       if (this.isExternalFrameMode() || !this.loadingVisible || !this.activePlaybackUrl) {
         return;
@@ -5658,11 +6384,36 @@ export const PlayerScreen = {
       const readyState = typeof PlayerController.getPlaybackReadyState === "function"
         ? Number(PlayerController.getPlaybackReadyState() || 0)
         : Number(PlayerController.video?.readyState || 0);
-      if (readyState >= 3) {
+      if (startup && this.currentEngineFsStream) {
+        const currentSeconds = this.getPlaybackCurrentSeconds();
+        if (Number.isFinite(currentSeconds) && currentSeconds > 0.2) {
+          this.hasPresentedPlaybackFrame = true;
+          this.loadingVisible = false;
+          this.releaseStartupAudioGate();
+          this.updateLoadingVisibility();
+          this.updateUiTick();
+          return;
+        }
+      }
+      if (readyState >= 3 && !(startup && this.currentEngineFsStream)) {
         this.loadingVisible = false;
         this.updateLoadingVisibility();
         this.updateUiTick();
         return;
+      }
+
+      if (startup && this.currentEngineFsStream) {
+        const stats = await this.fetchCurrentEngineFsStats();
+        if (this.shouldDeferEngineFsStartupStall(stats)) {
+          this.engineFsStallExtensions = Number(this.engineFsStallExtensions || 0) + 1;
+          logEngineFsDebug("EngineFS startup still buffering; extending stall guard", {
+            playbackUrl: this.activePlaybackUrl,
+            extension: this.engineFsStallExtensions,
+            stats: this.lastEngineFsStallStats
+          });
+          this.schedulePlaybackStallGuard({ timeoutMs: 12000 });
+          return;
+        }
       }
 
       const targetEngine = typeof PlayerController.getAlternativePlaybackEngine === "function"
@@ -5690,7 +6441,16 @@ export const PlayerScreen = {
       this.updateMediaSessionPlaybackState();
       this.setControlsVisible(true, { focus: false });
       this.sourcesError = `${this.mediaErrorMessage(PlayerController.getLastPlaybackErrorCode?.() || 0)}. Choose another source manually.`;
-      if (this.streamCandidates.length > 1) {
+      if (this.currentEngineFsStream) {
+        logEngineFsDebug("EngineFS playback stalled; keeping torrent alive until player exit or source change", {
+          reason: "playback-stall",
+          infoHash: this.currentEngineFsStream.infoHash,
+          fileIdx: this.currentEngineFsStream.fileIdx
+        });
+      }
+      if (this.currentEngineFsStream) {
+        this.renderSourcesPanel();
+      } else if (this.streamCandidates.length > 1) {
         this.openSourcesPanel();
       } else {
         this.renderSourcesPanel();
@@ -9371,9 +10131,11 @@ export const PlayerScreen = {
       if (!streamItems.length) {
         return;
       }
-      const bestStream = this.selectBestStreamUrl(streamItems) || streamItems[0].url;
+      const bestStreamCandidate = this.selectBestStreamCandidate(streamItems) || streamItems[0];
+      const bestStream = bestStreamCandidate?.url || bestStreamCandidate?.externalUrl || null;
       const nextEpisode = this.episodes[this.episodePanelIndex + 1] || null;
       await PlayerController.flushCurrentProgress({ forceCloudSync: true });
+      await this.releaseCurrentEngineFsStream("episode-change", { removeTorrent: true });
       Router.navigate("player", {
         streamUrl: bestStream,
         itemId: this.params?.itemId,
@@ -10067,7 +10829,7 @@ export const PlayerScreen = {
     this.resetControlsAutoHide();
   },
 
-  selectBestStreamUrl(streams = []) {
+  selectBestStreamCandidate(streams = []) {
     if (!Array.isArray(streams) || !streams.length) {
       return null;
     }
@@ -10084,8 +10846,19 @@ export const PlayerScreen = {
       return Boolean(capabilities[key]);
     };
 
+    const resolveContext = {
+      season: this.params?.season == null ? null : Number(this.params.season),
+      episode: this.params?.episode == null ? null : Number(this.params.episode)
+    };
+
     const scored = streams
-      .filter((stream) => Boolean(stream?.url))
+      .filter((stream) => Boolean(
+        stream?.url
+          || stream?.externalUrl
+          || DirectDebridResolver.canResolveStream(stream, resolveContext)
+          || WebOsEngineFsResolver.canResolveStream(stream)
+          || TizenStreamingServerResolver.canResolveStream(stream)
+      ))
       .map((stream) => {
         const presentation = stream.streamPresentation || stream.raw?.streamPresentation || {};
         const text = [
@@ -10102,7 +10875,9 @@ export const PlayerScreen = {
           ...(Array.isArray(presentation.visualTags) ? presentation.visualTags : []),
           ...(Array.isArray(presentation.audioTags) ? presentation.audioTags : []),
           ...(Array.isArray(presentation.audioChannels) ? presentation.audioChannels : []),
-          stream.url
+          stream.url,
+          stream.externalUrl,
+          stream.infoHash
         ].filter(Boolean).join(" ").toLowerCase();
         let score = 0;
 
@@ -10158,14 +10933,26 @@ export const PlayerScreen = {
           score += isWebOsRuntime ? 10 : 4;
         }
 
+        if (!stream.url && !stream.externalUrl && (WebOsEngineFsResolver.canResolveStream(stream) || TizenStreamingServerResolver.canResolveStream(stream))) {
+          score += 4;
+        }
+        if (!stream.url && !stream.externalUrl && DirectDebridResolver.canResolveStream(stream, resolveContext)) {
+          score += 2;
+        }
+
         return { stream, score };
       })
       .sort((left, right) => right.score - left.score);
 
-    return scored[0]?.stream?.url || streams[0]?.url || null;
+    return scored[0]?.stream || null;
   },
 
-  selectBestStreamUrlForAddon(streams = [], addonName = "") {
+  selectBestStreamUrl(streams = []) {
+    const candidate = this.selectBestStreamCandidate(streams);
+    return candidate?.url || candidate?.externalUrl || null;
+  },
+
+  selectBestStreamCandidateForAddon(streams = [], addonName = "") {
     const normalizedAddonName = String(addonName || "").trim();
     if (!normalizedAddonName || !Array.isArray(streams) || !streams.length) {
       return null;
@@ -10176,7 +10963,12 @@ export const PlayerScreen = {
       return null;
     }
 
-    return this.selectBestStreamUrl(addonStreams);
+    return this.selectBestStreamCandidate(addonStreams);
+  },
+
+  selectBestStreamUrlForAddon(streams = [], addonName = "") {
+    const candidate = this.selectBestStreamCandidateForAddon(streams, addonName);
+    return candidate?.url || candidate?.externalUrl || null;
   },
 
   async handlePlaybackEnded() {
@@ -10192,6 +10984,7 @@ export const PlayerScreen = {
     }
 
     if (normalizeItemType(this.params?.itemType || "movie") === "series") {
+      this.releaseCurrentEngineFsStreamBestEffort("playback-ended", { removeTorrent: true });
       void Router.navigate("detail", this.buildDetailRouteParamsFromPlayer(), {
         skipStackPush: true,
         replaceHistory: true
@@ -10211,6 +11004,8 @@ export const PlayerScreen = {
   },
 
   cleanup() {
+    this.unbindPlayerExitCleanup();
+    this.releaseCurrentEngineFsStreamBestEffort("player-cleanup", { removeTorrent: true });
     this.cancelSeekPreview({ commit: false });
     this.dismissPauseOverlay();
     this.pauseOverlayMetaRequestToken = Number(this.pauseOverlayMetaRequestToken || 0) + 1;
@@ -10228,6 +11023,10 @@ export const PlayerScreen = {
     this.manifestLoading = false;
     this.clearTrackDiscoveryTimer();
     this.clearPlaybackStallGuard();
+    if (this.engineFsStartupRetryTimer) {
+      clearTimeout(this.engineFsStartupRetryTimer);
+      this.engineFsStartupRetryTimer = null;
+    }
 
     this.clearSubtitleCueStyleBindings();
     this.clearMountedExternalSubtitleTracks();
