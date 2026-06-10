@@ -3,6 +3,8 @@ import { ScreenUtils } from "../../navigation/screen.js";
 import { streamRepository } from "../../../data/repository/streamRepository.js";
 import { DirectDebridResolver } from "../../../core/debrid/directDebridResolver.js";
 import { DirectDebridStreamPreparer } from "../../../core/debrid/directDebridStreamPreparer.js";
+import { WebOsEngineFsResolver } from "../../../core/p2p/webosEngineFsResolver.js";
+import { TizenStreamingServerResolver } from "../../../core/p2p/tizenStreamingServerResolver.js";
 import { DebridSettingsStore } from "../../../data/local/debridSettingsStore.js";
 import { StreamBadgeSettingsStore } from "../../../data/local/streamBadgeSettingsStore.js";
 import { LocalStore } from "../../../core/storage/localStore.js";
@@ -183,6 +185,7 @@ function flattenStreams(streamResult) {
         ytId: stream.ytId || null,
         infoHash: stream.infoHash || null,
         fileIdx: stream.fileIdx ?? null,
+        engineFs: stream.engineFs || stream.raw?.engineFs || null,
         externalUrl: stream.externalUrl || null,
         behaviorHints: stream.behaviorHints || null,
         sources: Array.isArray(stream.sources) ? stream.sources : [],
@@ -197,10 +200,15 @@ function flattenStreams(streamResult) {
         addonOrderIndex: Number.isFinite(Number(stream.addonOrderIndex))
           ? Number(stream.addonOrderIndex)
           : Number(group.addonOrderIndex ?? Number.MAX_SAFE_INTEGER),
-        sourceType: stream.type || stream.source || "",
+        mimeType: stream.mimeType || stream.raw?.mimeType || stream.type || stream.source || null,
+        sourceType: stream.sourceType || stream.mimeType || stream.type || stream.source || "",
         raw: stream
       };
-      if (DirectDebridResolver.shouldListStream(entry)) {
+      if (
+        DirectDebridResolver.shouldListStream(entry)
+        || WebOsEngineFsResolver.canResolveStream(entry)
+        || TizenStreamingServerResolver.canResolveStream(entry)
+      ) {
         flattened.push(entry);
       }
     });
@@ -348,6 +356,21 @@ export async function preloadStreamBadgeImages(settings = StreamBadgeSettingsSto
   await Promise.all(Array.from(urls).map((url) => requestAddonLogo(url)));
 }
 
+async function preloadMatchedStreamBadgeImages(streams = [], settings = StreamBadgeSettingsStore.snapshot()) {
+  const urls = new Set();
+  (streams || []).forEach((stream) => {
+    matchStreamBadges(stream, settings?.rules)
+      .slice(0, STREAM_BADGE_LIMIT)
+      .forEach((badge) => {
+        const url = normalizeAddonLogoUrl(badge.imageURL);
+        if (url) {
+          urls.add(url);
+        }
+      });
+  });
+  await Promise.all(Array.from(urls).map((url) => requestAddonLogo(url)));
+}
+
 function hydrateAddonLogoCache() {
   if (addonLogoCacheHydrated) {
     return;
@@ -424,12 +447,16 @@ function requestAddonLogo(url = "", onSettled = null) {
   }
   hydrateAddonLogoCache();
   const cached = addonLogoCache.get(normalized);
-  if (cached?.status === "ready" || cached?.status === "loading" || cached?.status === "direct") {
-    return Promise.resolve(cached.status !== "loading");
+  if (cached?.status === "ready" || cached?.status === "direct") {
+    return Promise.resolve(true);
+  }
+  if (cached?.status === "loading") {
+    return cached.promise || Promise.resolve(false);
   }
 
-  addonLogoCache.set(normalized, { status: "loading", updatedAt: Date.now() });
-  return new Promise((resolve) => {
+  const loadingEntry = { status: "loading", updatedAt: Date.now(), promise: null };
+  addonLogoCache.set(normalized, loadingEntry);
+  const promise = new Promise((resolve) => {
     const settle = (ok) => {
       if (typeof onSettled === "function") {
         onSettled();
@@ -486,6 +513,8 @@ function requestAddonLogo(url = "", onSettled = null) {
     image.onerror = loadDirect;
     image.src = normalized;
   });
+  loadingEntry.promise = promise;
+  return promise;
 }
 
 function getCachedAddonLogoDisplayUrl(url = "") {
@@ -936,14 +965,29 @@ function sortStreamsByAddonOrder(streams = [], sourceChips = []) {
 export const StreamScreen = {
 
   cancelScheduledRender() {
+    if (this.renderDelayTimer) {
+      clearTimeout(this.renderDelayTimer);
+      this.renderDelayTimer = null;
+    }
     if (this.renderFrame) {
       cancelAnimationFrame(this.renderFrame);
       this.renderFrame = null;
     }
   },
 
-  requestRender() {
+  requestRender({ delayMs = 0 } = {}) {
     if (!this.container || Router.getCurrent() !== "stream") {
+      return;
+    }
+    const delay = Math.max(0, Number(delayMs || 0));
+    if (delay > 0) {
+      if (this.renderFrame || this.renderDelayTimer) {
+        return;
+      }
+      this.renderDelayTimer = setTimeout(() => {
+        this.renderDelayTimer = null;
+        this.requestRender();
+      }, delay);
       return;
     }
     if (this.renderFrame) {
@@ -1076,6 +1120,7 @@ export const StreamScreen = {
     this.sourceChips = [];
     this.addonLogoLookup = {};
     this.addonFilter = "all";
+    this.hasRenderedStreamRouteShell = false;
 
     const restored = navigationContext?.restoredState && typeof navigationContext.restoredState === "object"
       ? navigationContext.restoredState
@@ -1116,9 +1161,12 @@ export const StreamScreen = {
     this.focusState = { zone: "filter", index: 0 };
     this.listScrollTop = 0;
     this.addonLogoLookup = {};
+    this.hasRenderedStreamRouteShell = false;
 
     this.sourceChips = [];
     this.requestRender();
+    const pendingChunkTasks = new Set();
+    const badgeSettings = StreamBadgeSettingsStore.snapshot();
 
     const upsertSourceChip = (addon, status = "loading") => {
       const name = String(addon?.displayName || addon?.name || "").trim();
@@ -1187,6 +1235,46 @@ export const StreamScreen = {
         .sort((left, right) => Number(left.orderIndex ?? Number.MAX_SAFE_INTEGER) - Number(right.orderIndex ?? Number.MAX_SAFE_INTEGER));
     };
 
+    const displayChunkGroups = async (groups = []) => {
+      if (token !== this.loadToken) {
+        return;
+      }
+      const chunkStreams = mergeStreamItems(
+        [],
+        this.applyAddonLogos(flattenStreams({ status: "success", data: groups }))
+      );
+      if (!chunkStreams.length) {
+        return;
+      }
+      await preloadMatchedStreamBadgeImages(chunkStreams, badgeSettings);
+      if (token !== this.loadToken) {
+        return;
+      }
+      this.streams = mergeStreamItems(this.streams, chunkStreams);
+      this.scheduleDebridPreparation();
+      markSuccessfulSources(groups.map((group) => ({
+        name: group?.addonName || "",
+        logo: group?.addonLogo || "",
+        orderIndex: group?.addonOrderIndex
+      })));
+      if (this.streams.length && this.focusState?.zone !== "card") {
+        this.focusState = { zone: "card", index: 0 };
+      }
+      this.requestRender({ delayMs: 120 });
+    };
+
+    const queueChunkGroups = (groups = []) => {
+      const task = displayChunkGroups(groups)
+        .catch((error) => {
+          console.warn("Stream chunk prerender failed", error);
+        })
+        .finally(() => {
+          pendingChunkTasks.delete(task);
+        });
+      pendingChunkTasks.add(task);
+      return task;
+    };
+
     const options = {
       itemId: String(this.params?.itemId || ""),
       season: this.params?.season ?? null,
@@ -1196,19 +1284,14 @@ export const StreamScreen = {
           return;
         }
         upsertSourceChip(addon, "loading");
-        this.requestRender();
+        this.requestRender({ delayMs: 120 });
       },
       onChunk: (chunkResult) => {
         if (token !== this.loadToken || chunkResult?.status !== "success") {
           return;
         }
         const groups = Array.isArray(chunkResult.data) ? chunkResult.data : [];
-        markSuccessfulSources(groups.map((group) => ({
-          name: group?.addonName || "",
-          logo: group?.addonLogo || "",
-          orderIndex: group?.addonOrderIndex
-        })));
-        this.requestRender();
+        queueChunkGroups(groups);
       }
     };
 
@@ -1218,11 +1301,22 @@ export const StreamScreen = {
         return;
       }
       const loadedStreams = mergeStreamItems([], this.applyAddonLogos(flattenStreams(streamResult)));
-      await preloadStreamBadgeImages();
+      await Promise.allSettled(Array.from(pendingChunkTasks));
       if (token !== this.loadToken) {
         return;
       }
-      this.streams = loadedStreams;
+      const existingKeys = new Set(this.streams.map((stream) => streamMergeKey(stream)).filter(Boolean));
+      const missingStreams = loadedStreams.filter((stream) => {
+        const key = streamMergeKey(stream);
+        return key && !existingKeys.has(key);
+      });
+      if (missingStreams.length) {
+        await preloadMatchedStreamBadgeImages(missingStreams, badgeSettings);
+        if (token !== this.loadToken) {
+          return;
+        }
+        this.streams = mergeStreamItems(this.streams, missingStreams);
+      }
       this.scheduleDebridPreparation();
       markSuccessfulSources(this.streams.map((stream) => stream.addonName));
       this.sourceChips = this.sourceChips.map((chip) => (
@@ -1425,7 +1519,7 @@ export const StreamScreen = {
     const cachedAddonLogoUrl = getCachedAddonLogoDisplayUrl(addonLogoUrl);
     let displayAddonLogoUrl = cachedAddonLogoUrl || "";
     if (addonLogoUrl && !displayAddonLogoUrl && !failedAddonLogoUrls.has(addonLogoUrl)) {
-      requestAddonLogo(addonLogoUrl, () => this.requestRender());
+      requestAddonLogo(addonLogoUrl, () => this.requestRender({ delayMs: 160 }));
     }
     const addonBadgeLabel = escapeHtml(getAddonBadgeLabel(stream.addonName || ""));
     const isDirectRemoteLogo = displayAddonLogoUrl
@@ -1445,6 +1539,9 @@ export const StreamScreen = {
       renderMetaItem("source", extractIndexerName(stream))
     ].filter(Boolean).join("");
     const isResolving = this.resolvingStreamId === stream.id;
+    const resolvingLabel = this.resolvingStreamMode === "p2p"
+      ? t("stream.p2p.resolving", {}, "Resolving P2P stream")
+      : t("stream.debrid.resolving", {}, "Resolving Debrid stream");
     const addonBadge = displayAddonLogoUrl
       ? `<img src="${escapeHtml(displayAddonLogoUrl)}" alt="${escapeHtml(stream.addonName || "Addon")}" data-addon-logo="${escapeHtml(addonLogoUrl)}" decoding="async" loading="lazy" /><span hidden>${addonBadgeLabel}</span>`
       : `<span>${addonBadgeLabel}</span>`;
@@ -1462,7 +1559,7 @@ export const StreamScreen = {
         <div class="stream-route-card-side">
           <div class="stream-route-addon-badge">${addonBadge}</div>
           <div class="stream-route-addon-name">${escapeHtml(stream.addonName || "Addon")}</div>
-          ${isResolving ? `<div class="stream-route-addon-name">${escapeHtml(t("stream.debrid.resolving", {}, "Resolving"))}</div>` : ""}
+          ${isResolving ? `<div class="stream-route-addon-name">${escapeHtml(resolvingLabel)}</div>` : ""}
         </div>
       </article>
     `;
@@ -1485,6 +1582,7 @@ export const StreamScreen = {
     const { isSeries, title, subtitle, episodeLabel, detailLine } = this.getHeaderMeta();
     const backdrop = this.getBackdropUrl();
     const logo = this.params?.logo || "";
+    const shellStableClass = this.hasRenderedStreamRouteShell ? " stable" : "";
     const orderedFilters = this.getOrderedFilterNames();
     const chips = [
       this.renderChip("all", this.addonFilter === "all", "success"),
@@ -1516,7 +1614,7 @@ export const StreamScreen = {
     }
 
     this.container.innerHTML = `
-      <div class="stream-route-shell">
+      <div class="stream-route-shell${shellStableClass}">
         <div class="stream-route-backdrop"${backdrop ? ` style="background-image:url('${String(backdrop).replace(/'/g, "%27")}')"` : ""}></div>
         <div class="stream-route-backdrop-dim"></div>
         <div class="stream-route-left-gradient"></div>
@@ -1549,6 +1647,7 @@ export const StreamScreen = {
     this.restoreScrollPosition();
     this.applyFocus();
     this.bindListScrollState();
+    this.hasRenderedStreamRouteShell = true;
   },
 
   bindListScrollState() {
@@ -1590,43 +1689,86 @@ export const StreamScreen = {
     }
     let targetUrl = selected.url || selected.externalUrl || "";
     if (!targetUrl) {
-      if (!DirectDebridResolver.canResolveStream(selected, {
+      const resolveContext = {
         season: this.params?.season == null ? null : Number(this.params.season),
         episode: this.params?.episode == null ? null : Number(this.params.episode)
-      })) {
-        window.alert?.(t("stream.debrid.unavailable", {}, "This Debrid source needs a configured Debrid account."));
-        return;
-      }
-      this.resolvingStreamId = selected.id;
-      this.requestRender();
-      const result = await DirectDebridResolver.resolve(selected, {
-        season: this.params?.season == null ? null : Number(this.params.season),
-        episode: this.params?.episode == null ? null : Number(this.params.episode)
-      });
-      this.resolvingStreamId = null;
-      if (result.status !== "success" || !result.stream?.url) {
+      };
+      const canUseEngineFs = WebOsEngineFsResolver.canResolveStream(selected);
+      const canUseTizenP2p = TizenStreamingServerResolver.canResolveStream(selected);
+      const canUseP2p = canUseEngineFs || canUseTizenP2p;
+      let fallbackError = "";
+
+      if (DirectDebridResolver.canResolveStream(selected, resolveContext)) {
+        this.resolvingStreamId = selected.id;
+        this.resolvingStreamMode = "debrid";
         this.requestRender();
-        const messageKey = result.status === "not_cached"
-          ? "stream.debrid.notCached"
-          : result.status === "stale"
-              ? "stream.debrid.stale"
-              : "stream.debrid.failed";
-        const fallback = result.status === "not_cached"
-          ? "Not cached on this service."
-          : result.status === "stale"
-              ? "This Debrid result expired. Refreshing streams."
-              : "Could not resolve this Debrid stream.";
-        window.alert?.(t(messageKey, {}, fallback));
+        const result = await DirectDebridResolver.resolve(selected, resolveContext);
+        this.resolvingStreamId = null;
+        this.resolvingStreamMode = "";
+        if (result.status === "success" && result.stream?.url) {
+          selected.url = result.stream.url;
+          selected.externalUrl = null;
+          selected.behaviorHints = result.stream.behaviorHints || selected.behaviorHints;
+          selected.raw = result.stream.raw || selected.raw;
+          targetUrl = selected.url || selected.externalUrl || "";
+        } else {
+          this.requestRender();
+          const messageKey = result.status === "not_cached"
+            ? "stream.debrid.notCached"
+            : result.status === "stale"
+                ? "stream.debrid.stale"
+                : "stream.debrid.failed";
+          const fallback = result.status === "not_cached"
+            ? "Not cached on this service."
+            : result.status === "stale"
+                ? "This Debrid result expired. Refreshing streams."
+                : "Could not resolve this Debrid stream.";
+          fallbackError = t(messageKey, {}, fallback);
+        }
+      }
+
+      if (!targetUrl && canUseP2p) {
+        this.resolvingStreamId = selected.id;
+        this.resolvingStreamMode = "p2p";
+        this.requestRender();
+        const result = canUseEngineFs
+          ? await WebOsEngineFsResolver.resolve(selected, resolveContext)
+          : await TizenStreamingServerResolver.resolve(selected, resolveContext);
+        this.resolvingStreamId = null;
+        this.resolvingStreamMode = "";
+        if (result.status === "success" && result.stream?.url) {
+          selected.url = result.stream.url;
+          selected.externalUrl = null;
+          selected.infoHash = result.stream.infoHash || selected.infoHash;
+          selected.fileIdx = result.stream.fileIdx ?? selected.fileIdx;
+          selected.engineFs = result.stream.engineFs || selected.engineFs || null;
+          selected.tizenP2p = result.stream.tizenP2p || selected.tizenP2p || null;
+          selected.mimeType = result.stream.mimeType || selected.mimeType || null;
+          selected.sourceType = result.stream.sourceType || selected.sourceType || "";
+          selected.behaviorHints = result.stream.behaviorHints || selected.behaviorHints;
+          selected.raw = result.stream.raw || selected.raw;
+          targetUrl = selected.url || selected.externalUrl || "";
+        } else {
+          console.warn("StreamScreen: P2P resolve failed", {
+            status: result.status,
+            detail: result.detail || "",
+            infoHash: selected.infoHash || selected.raw?.infoHash || selected.clientResolve?.infoHash || selected.raw?.clientResolve?.infoHash || "",
+            fileIdx: selected.fileIdx ?? selected.raw?.fileIdx ?? null
+          });
+          this.requestRender();
+        }
+      }
+
+      if (!targetUrl) {
+        window.alert?.(canUseP2p
+          ? t("stream.p2p.failed", {}, "Could not start this torrent stream.")
+          : (fallbackError || t("stream.debrid.unavailable", {}, "This Debrid source needs a configured Debrid account.")));
         return;
       }
-      selected.url = result.stream.url;
-      selected.externalUrl = null;
-      selected.behaviorHints = result.stream.behaviorHints || selected.behaviorHints;
-      selected.raw = result.stream.raw || selected.raw;
       this.streams = this.streams.map((stream) => stream.id === selected.id ? { ...stream, ...selected } : stream);
-      targetUrl = selected.url || selected.externalUrl || "";
       this.requestRender();
     }
+    const playerStreamCandidates = this.getFilteredStreams();
     const itemType = normalizeType(this.params?.itemType);
     Router.navigate("player", {
       streamUrl: targetUrl,
@@ -1649,7 +1791,7 @@ export const StreamScreen = {
       season: this.params?.season == null ? null : Number(this.params.season),
       episode: this.params?.episode == null ? null : Number(this.params.episode),
       episodes: Array.isArray(this.params?.episodes) ? this.params.episodes : [],
-      streamCandidates: filtered,
+      streamCandidates: playerStreamCandidates,
       returnToStreamOnBack: true,
       fromDetailRoute: Boolean(this.params?.fromDetailRoute),
       nextEpisodeVideoId: this.params?.nextEpisodeVideoId || null,

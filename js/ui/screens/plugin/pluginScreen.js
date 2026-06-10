@@ -33,7 +33,7 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-const PHONE_MANAGER_URL = "https://nuvioapp.space/account?tab=addons";
+const PHONE_MANAGER_URL = "https://nuvio.tv/account?tab=addons";
 
 async function getPhoneManagerUrl() {
   return PHONE_MANAGER_URL;

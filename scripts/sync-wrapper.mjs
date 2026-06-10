@@ -9,9 +9,13 @@ const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const appName = "Nuvio TV";
 const webOsRuntimeScriptPath = "assets/libs/webOSTV.js";
-const webOsServiceSourceDirName = "space.nuvio.webos.service";
+const legacyWebOsServiceSourceDirName = "space.nuvio.webos.service";
+const webOsServiceSourceDirName = "webos";
 const webOsServiceId = "space.nuvio.webos.service";
 const webOsServiceDirName = webOsServiceId;
+const tizenEngineFsServiceDirName = "tizen";
+const tizenEngineFsServiceRelativePath = "services/tizen/enginefs-service.js";
+const tizenEngineFsRuntimeDirRelativePath = "services/tizen/runtime";
 const defaultEnvFileContents = `(function defineNuvioEnv() {
   var root = typeof globalThis !== "undefined" ? globalThis : window;
   root.__NUVIO_ENV__ = Object.assign({}, root.__NUVIO_ENV__ || {}, {
@@ -20,6 +24,7 @@ const defaultEnvFileContents = `(function defineNuvioEnv() {
     TV_LOGIN_REDIRECT_BASE_URL: "",
     YOUTUBE_PROXY_URL: "youtube-proxy.html",
     ADDON_REMOTE_BASE_URL: "",
+    TIZEN_ENGINEFS_SERVICE_ID: "",
     WEBOS_SERVICE_ID: "space.nuvio.webos.service",
     ENABLE_REMOTE_WRAPPER_MODE: false,
     PREFERRED_PLAYBACK_ORDER: ["native-hls", "hls.js", "dash.js", "native-file", "platform-avplay"],
@@ -142,6 +147,7 @@ async function syncRootFolder(targetDir, folderName) {
 async function syncServiceFolder(targetDir, serviceDirName, { targetServiceDirName = serviceDirName } = {}) {
   const targetServicesDir = path.join(targetDir, "services");
   await mkdir(targetServicesDir, { recursive: true });
+  await rm(path.join(targetServicesDir, legacyWebOsServiceSourceDirName), { recursive: true, force: true });
   await rm(path.join(targetServicesDir, webOsServiceSourceDirName), { recursive: true, force: true });
   await rm(path.join(targetServicesDir, webOsServiceDirName), { recursive: true, force: true });
   await cp(
@@ -237,13 +243,14 @@ function buildTizenIndexHtml() {
 `;
 }
 
-function buildTizenMainJs() {
+function buildTizenMainJs({ engineFsServiceId = "" } = {}) {
   return `/// <reference path="../../index.d.ts" />
 
 (function bootstrapTizen() {
   "use strict";
 
   window.__NUVIO_PLATFORM__ = "tizen";
+  window.__NUVIO_TIZEN_ENGINEFS_SERVICE_ID__ = ${JSON.stringify(engineFsServiceId)};
 
   function ensureRuntimeCompatibility() {
     if (typeof window.globalThis === "undefined") {
@@ -398,8 +405,19 @@ async function syncWebOsCompanionFiles(targetDir) {
 
   await Promise.all(filesToRewrite.map(async (filePath) => {
     const current = await readTextFile(filePath, `Expected webOS service file at ${filePath}.`);
-    await writeTextFile(filePath, current.replaceAll(webOsServiceSourceDirName, webOsServiceId));
+    await writeTextFile(filePath, current.replaceAll(legacyWebOsServiceSourceDirName, webOsServiceId));
   }));
+}
+
+async function syncTizenEngineFsService(targetDir) {
+  const serviceDir = path.join(targetDir, "services", tizenEngineFsServiceDirName);
+  await rm(serviceDir, { recursive: true, force: true });
+  await mkdir(serviceDir, { recursive: true });
+
+  await Promise.all([
+    cp(path.join(rootDir, "services", "tizen", "enginefs-service.js"), path.join(targetDir, tizenEngineFsServiceRelativePath)),
+    cp(path.join(rootDir, "services", "tizen", "runtime"), path.join(targetDir, tizenEngineFsRuntimeDirRelativePath), { recursive: true })
+  ]);
 }
 
 function upsertXmlTag(xml, tagName, innerText) {
@@ -425,6 +443,37 @@ function upsertTizenIcon(xml, iconSrc) {
   }
 
   return insertIntoWidget(xml, `<icon src="${iconSrc}"/>`);
+}
+
+function upsertTizenFeature(xml, featureName) {
+  const escaped = featureName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const featurePattern = new RegExp(`<feature\\b[^>]*name="${escaped}"[^>]*/>`);
+  if (featurePattern.test(xml)) {
+    return xml;
+  }
+  return insertIntoWidget(xml, `<feature name="${featureName}"/>`);
+}
+
+function readTizenApplicationId(xml) {
+  const match = String(xml || "").match(/<tizen:application\b[^>]*\bid="([^"]+)"/);
+  return match ? match[1] : "";
+}
+
+function removeTizenEngineFsService(xml) {
+  return String(xml || "").replace(/\s*<tizen:service\b[^>]*EngineFsService[^>]*>[\s\S]*?<\/tizen:service>/g, "");
+}
+
+function upsertTizenEngineFsService(xml, serviceId) {
+  const serviceSnippet = `<tizen:service id="${serviceId}" auto-restart="true" on-boot="false">
+    <tizen:content src="${tizenEngineFsServiceRelativePath}"/>
+    <tizen:name>Nuvio EngineFS Service</tizen:name>
+    <tizen:description>Local torrent streaming service for Nuvio Tizen playback</tizen:description>
+  </tizen:service>`;
+  const withoutOldService = removeTizenEngineFsService(xml);
+  if (/<tizen:profile\b/.test(withoutOldService)) {
+    return withoutOldService.replace(/<tizen:profile\b/, `${serviceSnippet}\n  <tizen:profile`);
+  }
+  return insertIntoWidget(withoutOldService, serviceSnippet);
 }
 
 function insertIntoWidget(xml, snippet) {
@@ -456,11 +505,18 @@ async function updateTizenMetadata(targetDir) {
   configXml = upsertTizenIcon(configXml, wrapperIconFiles.tizenIcon.target);
   configXml = upsertXmlTag(configXml, "name", appName);
   configXml = upsertTizenWidgetVersion(configXml, appVersion);
+  configXml = upsertTizenFeature(configXml, "http://tizen.org/feature/web.service");
+  const tizenAppId = readTizenApplicationId(configXml);
+  const engineFsServiceId = tizenAppId ? `${tizenAppId}.EngineFsService` : "";
+  if (engineFsServiceId) {
+    configXml = upsertTizenEngineFsService(configXml, engineFsServiceId);
+  }
 
   await writeTextFile(configPath, configXml);
   await syncTizenIcon(targetDir);
   await writeTextFile(path.join(targetDir, "index.html"), buildTizenIndexHtml());
-  await writeTextFile(path.join(targetDir, "main.js"), buildTizenMainJs());
+  await writeTextFile(path.join(targetDir, "main.js"), buildTizenMainJs({ engineFsServiceId }));
+  await syncTizenEngineFsService(targetDir);
 }
 async function injectWebOsRuntimeEnv(targetDir) {
   const envPath = path.join(targetDir, "nuvio.env.js");

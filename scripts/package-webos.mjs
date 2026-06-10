@@ -30,7 +30,7 @@ const serviceTempBundlePath = path.join(stagingDir, "__webos-service.bundle.js")
 
 const appName = "Nuvio TV";
 const webOsServiceId = "space.nuvio.webos.service";
-const webOsServiceSourceDir = path.join(rootDir, "services", webOsServiceId);
+const webOsServiceSourceDir = path.join(rootDir, "services", "webos");
 const webOsRuntimeScriptPath = "assets/libs/webOSTV.js";
 
 async function assertDistExists() {

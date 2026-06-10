@@ -15,6 +15,8 @@ const appName = "Nuvio TV";
 const defaultTizenPackageId = "NuvioTV001";
 const defaultTizenAppId = "NuvioTV001.NuvioTV";
 const defaultWidgetUri = "https://nuvio.tv";
+const tizenEngineFsServiceRelativePath = "services/tizen/enginefs-service.js";
+const tizenEngineFsRuntimeDirRelativePath = "services/tizen/runtime";
 
 function normalizeVersion(version) {
   const parts = String(version || "0.0.0")
@@ -45,6 +47,7 @@ async function assertDistExists() {
 }
 
 function buildConfigXml({ appId, packageId, version }) {
+  const engineFsServiceId = `${packageId}.EngineFsService`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <widget xmlns:tizen="http://tizen.org/ns/widgets" xmlns="http://www.w3.org/ns/widgets" id="${defaultWidgetUri}" version="${version}" viewmodes="maximized">
   <access origin="*" subdomains="true"/>
@@ -52,11 +55,19 @@ function buildConfigXml({ appId, packageId, version }) {
   <author href="${defaultWidgetUri}">Nuvio</author>
   <content src="index.html"/>
   <feature name="http://tizen.org/feature/screen.size.all"/>
+  <feature name="http://tizen.org/feature/web.service"/>
   <icon src="icon.png"/>
   <name>${appName}</name>
   <tizen:privilege name="http://tizen.org/privilege/internet"/>
   <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
   <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <tizen:service id="${engineFsServiceId}" auto-restart="true" on-boot="false">
+    <tizen:content src="${tizenEngineFsServiceRelativePath}"/>
+    <tizen:name>Nuvio EngineFS Service</tizen:name>
+    <tizen:icon src="icon.png"/>
+    <tizen:description>Local torrent streaming service for Nuvio Tizen playback</tizen:description>
+    <tizen:category name="http://tizen.org/category/service"/>
+  </tizen:service>
   <tizen:profile name="tv-samsung"/>
   <tizen:setting screen-orientation="landscape" context-menu="enable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
 </widget>
@@ -83,8 +94,10 @@ function buildIndexHtml() {
 `;
 }
 
-function buildMainJs() {
+function buildMainJs({ packageId }) {
+  const engineFsServiceId = `${packageId}.EngineFsService`;
   return `window.__NUVIO_PLATFORM__ = "tizen";
+window.__NUVIO_TIZEN_ENGINEFS_SERVICE_ID__ = ${JSON.stringify(engineFsServiceId)};
 
 var tvInput = window.tizen && window.tizen.tvinputdevice;
 if (tvInput && typeof tvInput.registerKey === "function") {
@@ -119,6 +132,15 @@ loadScript("app.bundle.js");
 `;
 }
 
+async function stageTizenEngineFsService() {
+  const serviceDir = path.join(stagingDir, "services", "tizen");
+  await mkdir(serviceDir, { recursive: true });
+  await Promise.all([
+    cp(path.join(rootDir, "services", "tizen", "enginefs-service.js"), path.join(stagingDir, tizenEngineFsServiceRelativePath)),
+    cp(path.join(rootDir, "services", "tizen", "runtime"), path.join(stagingDir, tizenEngineFsRuntimeDirRelativePath), { recursive: true })
+  ]);
+}
+
 async function copyDistFolder(folderName) {
   const source = path.join(distDir, folderName);
   if (!(await pathExists(source))) {
@@ -140,8 +162,9 @@ async function stagePackage({ appId, packageId, version, envSourcePath }) {
     cp(path.join(rootDir, "assets", "images", "tizenIcon.png"), path.join(stagingDir, "icon.png")),
     writeFile(path.join(stagingDir, "config.xml"), buildConfigXml({ appId, packageId, version }), "utf8"),
     writeFile(path.join(stagingDir, "index.html"), buildIndexHtml(), "utf8"),
-    writeFile(path.join(stagingDir, "main.js"), buildMainJs(), "utf8")
+    writeFile(path.join(stagingDir, "main.js"), buildMainJs({ packageId }), "utf8")
   ]);
+  await stageTizenEngineFsService();
 
   if (envSourcePath) {
     await cp(envSourcePath, path.join(stagingDir, "nuvio.env.js"));
