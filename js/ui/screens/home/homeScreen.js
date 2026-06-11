@@ -2014,7 +2014,12 @@ export function createPosterCardMarkup(item, rowIndex, itemIndex, itemType, rowD
   if (collectionItem) {
     const visualSrc = firstNonEmpty(collectionItem.poster, collectionItem.coverImageUrl, collectionItem.backdrop);
     const subtitle = buildPosterSubtitle(collectionItem, layoutMode);
-    const shapeClass = " is-landscape is-collection-landscape";
+    const tileShape = normalizeCollectionPosterShape(collectionItem.tileShape);
+    const shapeClass = tileShape === "POSTER"
+      ? ""
+      : (tileShape === "SQUARE"
+        ? " is-collection-square"
+        : " is-landscape is-collection-landscape");
     const focusGifOverlay = collectionItem.focusGifEnabled && collectionItem.focusGifUrl
       ? `<img class="home-poster-focus-gif" data-src="${escapeAttribute(collectionItem.focusGifUrl)}" alt="" aria-hidden="true" />`
       : "";
