@@ -1377,6 +1377,8 @@
     <string name="player_more_aspect_ratio">Aspect Ratio</string>
     <string name="player_more_open_external">Open in External Player</string>
     <string name="player_error_no_stream_url">No stream URL provided</string>
+    <string name="player_error_source_not_supported">Source not supported on this TV</string>
+    <string name="player_error_stream_load_failed">Playback failed to load</string>
     <string name="stream_info_section_source">SOURCE</string>
     <string name="stream_info_section_file">FILE</string>
     <string name="stream_info_section_video">VIDEO</string>

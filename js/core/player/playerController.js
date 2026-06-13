@@ -9,7 +9,7 @@ import { resolvePlatformAvplayEngine } from "./engines/platformAvplayEngine.js";
 import { WebOsLunaService } from "../../platform/webos/webosLunaService.js";
 import { loadStreamingLibs } from "../../runtime/loadStreamingLibs.js";
 
-const MIN_PROGRESS_SYNC_DURATION_MS = 60000;
+const MIN_PROGRESS_SYNC_DURATION_MS = 1000;
 
 function logEngineFsDebug(...args) {
   if (globalThis.__NUVIO_DEBUG_ENGINEFS__) {
@@ -53,6 +53,7 @@ export const PlayerController = {
   currentPlaybackUrl: "",
   currentPlaybackHeaders: {},
   currentPlaybackMediaSourceType: null,
+  lastProgressSnapshot: null,
   avplayFallbackAttempts: new Set(),
   playbackEngineAttempts: new Map(),
   playRequestToken: 0,
@@ -3134,15 +3135,65 @@ export const PlayerController = {
     };
   },
 
+  buildProgressSnapshotKey(context = this.createProgressContext()) {
+    if (!context?.itemId) {
+      return "";
+    }
+    return [
+      String(context.itemId || "").trim(),
+      String(context.itemType || "movie").trim(),
+      String(context.videoId || "").trim(),
+      Number.isFinite(context.season) ? Number(context.season) : "",
+      Number.isFinite(context.episode) ? Number(context.episode) : ""
+    ].join("|");
+  },
+
+  recordProgressSnapshot(positionMs, durationMs, context = null) {
+    const active = context || this.createProgressContext();
+    const safePosition = Number(positionMs || 0);
+    const safeDuration = Number(durationMs || 0);
+    if (!active?.itemId || !Number.isFinite(safePosition) || safePosition <= 0) {
+      return;
+    }
+    this.lastProgressSnapshot = {
+      key: this.buildProgressSnapshotKey(active),
+      positionMs: Math.max(0, Math.trunc(safePosition)),
+      durationMs: Number.isFinite(safeDuration) && safeDuration > 0 ? Math.max(0, Math.trunc(safeDuration)) : 0,
+      updatedAt: Date.now()
+    };
+  },
+
+  getRecordedProgressSnapshot(context = null) {
+    const active = context || this.createProgressContext();
+    const snapshot = this.lastProgressSnapshot;
+    if (!snapshot || !active?.itemId) {
+      return null;
+    }
+    if (snapshot.key !== this.buildProgressSnapshotKey(active)) {
+      return null;
+    }
+    return snapshot;
+  },
+
   async flushCurrentProgress({ forceCloudSync = false, allowCloudSync = true } = {}) {
     const context = this.createProgressContext();
     if (!context.itemId) {
       return false;
     }
 
+    const snapshot = this.getRecordedProgressSnapshot(context);
+    const currentPositionMs = Math.floor(this.getCurrentTimeSeconds() * 1000);
+    const currentDurationMs = Math.floor(this.getDurationSeconds() * 1000);
+    const positionMs = Number.isFinite(currentPositionMs) && currentPositionMs > 0
+      ? currentPositionMs
+      : Number(snapshot?.positionMs || 0);
+    const durationMs = Number.isFinite(currentDurationMs) && currentDurationMs > 0
+      ? currentDurationMs
+      : Number(snapshot?.durationMs || 0);
+
     await this.flushProgress(
-      Math.floor(this.getCurrentTimeSeconds() * 1000),
-      Math.floor(this.getDurationSeconds() * 1000),
+      positionMs,
+      durationMs,
       false,
       context,
       { allowCloudSync: allowCloudSync && !forceCloudSync }
@@ -3165,6 +3216,9 @@ export const PlayerController = {
     const hasReachedMinimumSyncPosition = Number.isFinite(safePosition)
       && safePosition >= MIN_PROGRESS_SYNC_DURATION_MS;
     const isCompleted = hasFiniteDuration && safePosition / safeDuration >= 0.90;
+    if (safePosition > 0) {
+      this.recordProgressSnapshot(safePosition, safeDuration, active);
+    }
     if (!clear && !isCompleted) {
       if (hasFiniteDuration && safeDuration < MIN_PROGRESS_SYNC_DURATION_MS) {
         return false;
@@ -3186,7 +3240,23 @@ export const PlayerController = {
     }
 
     if (clear || isCompleted) {
-      await watchProgressRepository.removeProgress(active.itemId, active.videoId || null);
+      if (isCompleted) {
+        await watchProgressRepository.saveProgress({
+          contentId: active.itemId,
+          contentType: active.itemType || "movie",
+          videoId: active.videoId || null,
+          season: active.season,
+          episode: active.episode,
+          title: active.title || null,
+          poster: active.poster || null,
+          background: active.background || null,
+          episodeTitle: active.episodeTitle || null,
+          positionMs: hasFiniteDuration ? Math.max(0, Math.trunc(safeDuration)) : Math.max(0, Math.trunc(safePosition)),
+          durationMs: hasFiniteDuration ? Math.max(0, Math.trunc(safeDuration)) : Math.max(0, Math.trunc(safePosition))
+        });
+      } else {
+        await watchProgressRepository.removeProgress(active.itemId, active.videoId || null);
+      }
       if (!allowCloudSync) {
         return true;
       }

@@ -21,6 +21,24 @@ import { FolderDetailScreen } from "../screens/collection/folderDetailScreen.js"
 import { Platform } from "../../platform/index.js";
 import { RouteStateStore } from "./routeStateStore.js";
 
+const ROUTER_PERF_DEBUG = Boolean(globalThis.__NUVIO_DEBUG_ROUTER_PERF__ || globalThis.__NUVIO_DEBUG_HOME_PERF__);
+
+function routerPerfNow() {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+function logRouterPerf(stage, data = {}) {
+  if (!ROUTER_PERF_DEBUG) {
+    return;
+  }
+  try {
+    console.info(`[router-perf] ${stage}`, data);
+  } catch (_) {
+  }
+}
+
 const NON_BACKSTACK_ROUTES = new Set([
   "profileSelection",
   "authQrSignIn",
@@ -169,6 +187,7 @@ export const Router = {
   },
 
   async navigate(routeName, params = {}, options = {}) {
+    const navigationStart = ROUTER_PERF_DEBUG ? routerPerfNow() : 0;
 
     const fromHistory = Boolean(options?.fromHistory);
     const skipStackPush = Boolean(options?.skipStackPush);
@@ -204,6 +223,14 @@ export const Router = {
     const navigationContext = this.resolveNavigationContext(routeName, this.currentParams, options);
 
     await Screen.mount(this.currentParams, navigationContext);
+    logRouterPerf("navigate", {
+      ms: Number((routerPerfNow() - navigationStart).toFixed(2)),
+      route: routeName,
+      previousRoute,
+      fromHistory,
+      skipStackPush,
+      replaceHistory
+    });
 
     // If another navigation happened while this screen was mounting, this
     // navigation is stale and must not write an extra history entry.

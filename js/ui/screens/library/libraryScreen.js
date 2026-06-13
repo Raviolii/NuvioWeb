@@ -487,7 +487,7 @@ export const LibraryScreen = {
     ScreenUtils.indexFocusables(this.container);
     bindRootSidebarEvents(this.container, {
       currentRoute: "library",
-      onSelectedAction: () => this.focusMainNode(null, { preferEntryPoint: true }),
+      onSelectedAction: () => this.focusMainNode(),
       onExpandSidebar: () => this.focusSidebarNode()
     });
 
@@ -750,7 +750,7 @@ export const LibraryScreen = {
     ScreenUtils.indexFocusables(this.container);
     bindRootSidebarEvents(this.container, {
       currentRoute: "library",
-      onSelectedAction: () => this.focusMainNode(null, { preferEntryPoint: true }),
+      onSelectedAction: () => this.focusMainNode(),
       onExpandSidebar: () => this.focusSidebarNode()
     });
     this.restoreFocus();
@@ -1038,7 +1038,7 @@ export const LibraryScreen = {
     }
     if (direction === "up") {
       const previousRow = rows[rowIndex - 1];
-      return previousRow ? findNearestNodeByCenterX(current, previousRow.nodes) : null;
+      return previousRow ? findNearestNodeByCenterX(current, previousRow.nodes) : current;
     }
     if (direction === "down") {
       const nextRow = rows[rowIndex + 1];
@@ -1173,9 +1173,7 @@ export const LibraryScreen = {
       return false;
     }
     if (direction === "up") {
-      const target = this.controller.getState().sourceMode === "trakt"
-        ? this.resolvePreferredActionsRowNode() || this.resolvePreferredPickerRowNode(current)
-        : this.resolvePreferredPickerRowNode(current);
+      const target = this.resolveRelativeGridNode(current, direction);
       if (!target) {
         return false;
       }
@@ -1589,7 +1587,7 @@ export const LibraryScreen = {
 
     if (!sidebarLocked && code === 39 && current && this.isSidebarNode(current)) {
       event?.preventDefault?.();
-      await this.focusMainNode(null, { preferEntryPoint: true });
+      await this.focusMainNode();
       return;
     }
 

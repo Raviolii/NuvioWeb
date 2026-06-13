@@ -10,6 +10,7 @@ import { MdbListSettingsStore } from "../../data/local/mdbListSettingsStore.js";
 import { TraktSettingsStore, normalizeTraktContinueWatchingDaysCap } from "../../data/local/traktSettingsStore.js";
 import { AnimeSkipSettingsStore } from "../../data/local/animeSkipSettingsStore.js";
 import { StreamBadgeSettingsStore } from "../../data/local/streamBadgeSettingsStore.js";
+import { TorrentSettingsStore } from "../../data/local/torrentSettingsStore.js";
 import {
   ANDROID_DEBRID_STREAM_DESCRIPTION_TEMPLATE,
   DebridSettingsStore
@@ -1115,6 +1116,48 @@ const FEATURE_ADAPTERS = {
         return false;
       }
       StreamBadgeSettingsStore.setForProfile(profileId, partial, { silentSync: true });
+      return true;
+    }
+  },
+  torrent_settings: {
+    export(profileId) {
+      const settings = TorrentSettingsStore.getForProfile(profileId);
+      return {
+        p2p_enabled: Boolean(settings.p2pEnabled),
+        enable_upload: Boolean(settings.enableUpload),
+        hide_torrent_stats: Boolean(settings.hideTorrentStats)
+      };
+    },
+    project(rawFeature = {}) {
+      const raw = normalizeFeaturePayload(rawFeature);
+      const projected = {};
+      [
+        "p2p_enabled",
+        "enable_upload",
+        "hide_torrent_stats"
+      ].forEach((key) => {
+        if (booleanOrNull(raw[key]) != null) {
+          projected[key] = Boolean(raw[key]);
+        }
+      });
+      return projected;
+    },
+    import(profileId, rawFeature = {}) {
+      const raw = normalizeFeaturePayload(rawFeature);
+      const partial = {};
+      if (booleanOrNull(raw.p2p_enabled) != null) {
+        partial.p2pEnabled = Boolean(raw.p2p_enabled);
+      }
+      if (booleanOrNull(raw.enable_upload) != null) {
+        partial.enableUpload = Boolean(raw.enable_upload);
+      }
+      if (booleanOrNull(raw.hide_torrent_stats) != null) {
+        partial.hideTorrentStats = Boolean(raw.hide_torrent_stats);
+      }
+      if (!Object.keys(partial).length) {
+        return false;
+      }
+      TorrentSettingsStore.setForProfile(profileId, partial, { silentSync: true });
       return true;
     }
   },

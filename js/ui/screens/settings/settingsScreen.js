@@ -8,6 +8,7 @@ import { HomeCatalogStore } from "../../../data/local/homeCatalogStore.js";
 import { ThemeStore } from "../../../data/local/themeStore.js";
 import { ThemeManager } from "../../theme/themeManager.js";
 import { PlayerSettingsStore } from "../../../data/local/playerSettingsStore.js";
+import { TorrentSettingsStore } from "../../../data/local/torrentSettingsStore.js";
 import { LayoutPreferences } from "../../../data/local/layoutPreferences.js";
 import { MdbListSettingsStore } from "../../../data/local/mdbListSettingsStore.js";
 import { AnimeSkipSettingsStore } from "../../../data/local/animeSkipSettingsStore.js";
@@ -1175,7 +1176,8 @@ function createDefaultExpandedState(sectionId) {
       general: false,
       stream: false,
       audio: false,
-      subtitles: false
+      subtitles: false,
+      p2p: false
     };
   }
 
@@ -1362,6 +1364,7 @@ export const SettingsScreen = {
       pluginsEnabled: PluginManager.pluginsEnabled,
       theme: ThemeStore.get(),
       player: PlayerSettingsStore.get(),
+      torrent: TorrentSettingsStore.get(),
       layout: LayoutPreferences.get(),
       tmdb: TmdbSettingsStore.get(),
       mdbList: MdbListSettingsStore.get(),
@@ -1581,10 +1584,11 @@ export const SettingsScreen = {
     `;
   },
 
-  openOptionDialog({ title, options, selectedId, onSelect, returnFocusKey, dialogClassName = "", optionRenderer = "default" }) {
+  openOptionDialog({ title, message = "", options, selectedId, onSelect, returnFocusKey, dialogClassName = "", optionRenderer = "default" }) {
     this.textDialog = null;
     this.optionDialog = {
       title,
+      message,
       options: Array.isArray(options) ? options : [],
       selectedId: selectedId ?? null,
       onSelect,
@@ -1653,11 +1657,16 @@ export const SettingsScreen = {
 
     const dialogClassName = this.optionDialog.dialogClassName ? ` ${escapeHtml(this.optionDialog.dialogClassName)}` : "";
     const useLanguageRenderer = this.optionDialog.optionRenderer === "subtitle-language";
+    const isP2pConsentDialog = String(this.optionDialog.dialogClassName || "") === "settings-p2p-consent-dialog";
+    const messageHtml = this.optionDialog.message
+      ? `<div class="settings-text-dialog-message settings-option-dialog-message${isP2pConsentDialog ? " settings-p2p-consent-message" : ""}">${escapeHtml(String(this.optionDialog.message)).replace(/\n/g, "<br>")}</div>`
+      : "";
 
     return `
       <div class="settings-dialog-backdrop">
         <div class="settings-dialog${dialogClassName}">
           <div class="settings-dialog-title">${escapeHtml(this.optionDialog.title || t("common.selectOption"))}</div>
+          ${messageHtml}
           <div class="settings-dialog-list${useLanguageRenderer ? " settings-language-dialog-list" : ""}">
             ${this.optionDialog.options.map((option, index) => `
               <button class="settings-dialog-option settings-content-focusable focusable${useLanguageRenderer ? " settings-language-option" : ""}${String(option.id) === String(this.optionDialog.selectedId) ? " is-selected" : ""}"
@@ -3155,6 +3164,7 @@ export const SettingsScreen = {
   renderPlaybackSection(model) {
     this.ensureExpandedState("playback");
     const expanded = this.expandedSections.playback;
+    const torrentSettings = model.torrent || TorrentSettingsStore.get();
 
     this.actionMap.set("playback:toggle:general", () => {
       this.toggleExpandedSection("playback", "general");
@@ -3164,6 +3174,9 @@ export const SettingsScreen = {
     });
     this.actionMap.set("playback:toggle:subtitles", () => {
       this.toggleExpandedSection("playback", "subtitles");
+    });
+    this.actionMap.set("playback:toggle:p2p", () => {
+      this.toggleExpandedSection("playback", "p2p");
     });
 
     this.actionMap.set("playback:autoplay", () => {
@@ -3234,6 +3247,31 @@ export const SettingsScreen = {
         }
       });
     });
+    this.actionMap.set("playback:p2pEnabled", () => {
+      const current = TorrentSettingsStore.get();
+      if (current.p2pEnabled) {
+        TorrentSettingsStore.setP2pEnabled(false);
+        return;
+      }
+      this.openOptionDialog({
+        title: t("settings_p2p_title"),
+        message: t("p2p_consent_body"),
+        options: [
+          { id: "cancel", labelKey: "p2p_consent_cancel" },
+          { id: "enable", labelKey: "p2p_consent_enable" }
+        ],
+        returnFocusKey: "playback:p2pEnabled",
+        dialogClassName: "settings-p2p-consent-dialog",
+        onSelect: (option) => {
+          if (String(option.id) === "enable") {
+            TorrentSettingsStore.setP2pEnabled(true);
+          }
+        }
+      });
+    });
+    this.actionMap.set("playback:hideTorrentStats", () => {
+      TorrentSettingsStore.setHideTorrentStats(!Boolean(TorrentSettingsStore.get().hideTorrentStats));
+    });
 
     const generalBody = `
       <div class="settings-stack">
@@ -3298,6 +3336,23 @@ export const SettingsScreen = {
       </div>
     `;
 
+    const p2pBody = `
+      <div class="settings-stack">
+        ${this.renderToggleRow({
+      focusKey: "playback:p2pEnabled",
+      title: t("settings_p2p_title"),
+      subtitle: t("settings_p2p_subtitle"),
+      checked: Boolean(torrentSettings.p2pEnabled)
+    })}
+        ${this.renderToggleRow({
+      focusKey: "playback:hideTorrentStats",
+      title: t("settings_p2p_hide_stats_title"),
+      subtitle: t("settings_p2p_hide_stats_subtitle"),
+      checked: Boolean(torrentSettings.hideTorrentStats)
+    })}
+      </div>
+    `;
+
     return `
       ${this.renderSectionHeader(SECTION_META.find((item) => item.id === "playback"))}
       <div class="settings-group-card settings-group-card-fill">
@@ -3322,6 +3377,13 @@ export const SettingsScreen = {
       subtitle: t("settings.playback.groups.subtitles.subtitle"),
       expanded: Boolean(expanded.subtitles),
       bodyHtml: subtitleBody
+    })}
+          ${this.renderCollapsibleRow({
+      focusKey: "playback:toggle:p2p",
+      title: t("settings_p2p_title"),
+      subtitle: t("settings_p2p_subtitle"),
+      expanded: Boolean(expanded.p2p),
+      bodyHtml: p2pBody
     })}
         </div>
       </div>

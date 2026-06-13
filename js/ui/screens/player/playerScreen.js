@@ -11,6 +11,7 @@ import { parentalGuideRepository } from "../../../data/repository/parentalGuideR
 import { skipIntroRepository } from "../../../data/repository/skipIntroRepository.js";
 import { PlayerSettingsStore } from "../../../data/local/playerSettingsStore.js";
 import { StreamBadgeSettingsStore } from "../../../data/local/streamBadgeSettingsStore.js";
+import { TorrentSettingsStore } from "../../../data/local/torrentSettingsStore.js";
 import { matchStreamBadges } from "../../../core/streams/streamBadgeRules.js";
 import { metaRepository } from "../../../data/repository/metaRepository.js";
 import { I18n } from "../../../i18n/index.js";
@@ -25,8 +26,17 @@ import { requestWebOsCompanionService, subscribeWebOsCompanionService } from "..
 const CLOCK_FORMATTER_CACHE = new Map();
 const LANGUAGE_DISPLAY_NAME_CACHE = new Map();
 const ENGINEFS_NAVIGATION_CLEANUP_GRACE_MS = 1500;
+const STARTUP_PLAYBACK_ADVANCE_EPSILON_SECONDS = 0.001;
+const BUFFERING_SPINNER_STALL_MS = 500;
+const LOADING_LOGO_FILL_TARGET_LERP = 0.22;
+const LOADING_LOGO_FILL_IDLE_STEP = 0.006;
+const LOADING_LOGO_FILL_FRAME_MS = 80;
 const activeEngineFsPlaybackClaims = new Map();
 const deferredEngineFsRemovalTimers = new Map();
+
+function isBackEvent(event) {
+  return Environment.isBackEvent(event);
+}
 
 function logEngineFsDebug(...args) {
   if (globalThis.__NUVIO_DEBUG_ENGINEFS__) {
@@ -988,6 +998,20 @@ function formatBytes(value) {
   return `${amount.toFixed(precision)} ${units[unitIndex]}`;
 }
 
+function formatBytesPerSecond(value) {
+  const bytesPerSecond = Number(value || 0);
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
+    return "";
+  }
+  if (bytesPerSecond >= 1_048_576) {
+    return `${(bytesPerSecond / 1_048_576).toFixed(1)} MB/s`;
+  }
+  if (bytesPerSecond >= 1_024) {
+    return `${Math.round(bytesPerSecond / 1_024)} KB/s`;
+  }
+  return `${Math.round(bytesPerSecond)} B/s`;
+}
+
 function normalizeStreamBadgeChipColor(value = "") {
   const hex = String(value || "").trim().replace(/^#/, "");
   if (!/^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(hex)) {
@@ -1526,7 +1550,11 @@ export const PlayerScreen = {
     ];
 
     this.streamCandidates = this.normalizeStreamCandidates(Array.isArray(params.streamCandidates) ? params.streamCandidates : []);
-    const initialStreamCandidate = this.selectBestStreamCandidate(this.streamCandidates);
+    const preferredStreamId = String(params?.preferredStreamId || "").trim();
+    const preferredStreamCandidate = preferredStreamId
+      ? this.streamCandidates.find((stream) => String(stream?.id || "") === preferredStreamId) || null
+      : null;
+    const initialStreamCandidate = preferredStreamCandidate || this.selectBestStreamCandidate(this.streamCandidates);
     const initialStreamUrl = params.streamUrl || initialStreamCandidate?.url || null;
     if (!this.streamCandidates.length && initialStreamUrl) {
       this.streamCandidates = this.normalizeStreamCandidates([
@@ -1538,7 +1566,10 @@ export const PlayerScreen = {
       ]);
     }
 
-    this.currentStreamIndex = this.streamCandidates.findIndex((stream) => stream.url === initialStreamUrl);
+    this.currentStreamIndex = this.streamCandidates.findIndex((stream) => (
+      (preferredStreamCandidate && String(stream?.id || "") === String(preferredStreamCandidate.id || ""))
+      || stream.url === initialStreamUrl
+    ));
     if (this.currentStreamIndex < 0) {
       this.currentStreamIndex = 0;
     }
@@ -1695,13 +1726,27 @@ export const PlayerScreen = {
     this.playerExitCleanupHandler = null;
     this.lastPlaybackProgressAt = Date.now();
     this.hasPresentedPlaybackFrame = false;
-
+    this.startupErrorMessage = "";
+    this.startupErrorMediaCode = 0;
+    this.startupPlaybackBaselineSeconds = null;
+    this.startupPlaybackHasAdvanced = false;
     this.paused = false;
     this.controlsVisible = true;
     this.loadingVisible = true;
+    this.loadingProgress = null;
+    this.loadingLogoFillActive = false;
+    this.loadingLogoFillProgress = 0;
+    this.loadingLogoFillTarget = 0;
+    this.loadingLogoFillFrame = null;
+    this.loadingTorrentStatus = "";
+    this.torrentOverlayData = null;
+    this.loadingProgressRefreshInFlight = false;
     this.seekLoading = false;
     this.startupAudioGateActive = false;
     this.loadingCompletionTimer = null;
+    this.loadingCompletionToken = 0;
+    this.bufferingSpinnerTimer = null;
+    this.bufferingSpinnerBaselineSeconds = null;
     this.moreActionsVisible = false;
     this.controlFocusZone = "buttons";
     this.stickyProgressFocus = false;
@@ -2394,6 +2439,16 @@ export const PlayerScreen = {
     return this.streamCandidates.find((entry) => Boolean(entry?.url)) || null;
   },
 
+  isDebridPlaybackCandidate(streamCandidate = this.getCurrentStreamCandidate()) {
+    const stream = streamCandidate?.raw || streamCandidate || {};
+    const resolve = streamCandidate?.clientResolve || stream?.clientResolve || {};
+    const debridCacheStatus = streamCandidate?.debridCacheStatus || stream?.debridCacheStatus || null;
+    return Boolean(
+      String(resolve.type || "").toLowerCase() === "debrid"
+      || debridCacheStatus
+    );
+  },
+
   getStreamSearchText(streamCandidate) {
     const stream = streamCandidate?.raw || streamCandidate || {};
     return String([
@@ -2690,6 +2745,15 @@ export const PlayerScreen = {
     this.lastEngineFsStallStats = null;
     this.engineFsStallExtensions = 0;
     this.currentEngineFsStream = null;
+    this.stopLoadingLogoFillAnimation();
+    this.loadingProgress = null;
+    this.loadingLogoFillActive = false;
+    this.loadingLogoFillProgress = 0;
+    this.loadingLogoFillTarget = 0;
+    this.loadingTorrentStatus = "";
+    this.torrentOverlayData = null;
+    this.syncLoadingOverlayProgress();
+    this.syncTorrentOverlay();
     this.engineFsPlaybackToken = "";
     releaseEngineFsPlaybackClaim(current, playbackToken);
     if (!removeTorrent || !current.infoHash) {
@@ -2731,6 +2795,7 @@ export const PlayerScreen = {
   bindPlayerExitCleanup() {
     this.unbindPlayerExitCleanup();
     this.playerExitCleanupHandler = () => {
+      void PlayerController.flushCurrentProgress({ forceCloudSync: true });
       this.sendEngineFsRemoveOnPageExit();
       this.releaseCurrentEngineFsStreamBestEffort("player-exit", { removeTorrent: true });
     };
@@ -3526,7 +3591,17 @@ export const PlayerScreen = {
     const currentStreamCandidate = this.getCurrentStreamCandidate();
     this.paused = false;
     this.hasPresentedPlaybackFrame = false;
+    this.startupPlaybackBaselineSeconds = null;
+    this.startupPlaybackHasAdvanced = false;
     this.loadingVisible = true;
+    this.loadingProgress = null;
+    this.loadingLogoFillActive = false;
+    this.loadingLogoFillProgress = 0;
+    this.loadingLogoFillTarget = 0;
+    this.loadingTorrentStatus = "";
+    this.torrentOverlayData = null;
+    this.syncLoadingOverlayProgress();
+    this.syncTorrentOverlay();
     this.updateLoadingVisibility();
     this.enableStartupAudioGate();
     PlayerController.play(targetUrl, this.buildPlaybackContext(currentStreamCandidate));
@@ -3566,15 +3641,34 @@ export const PlayerScreen = {
           <div class="player-loading-gradient"></div>
           <div class="player-loading-center">
             <div class="player-loading-identity${loadingMeta.logoUrl ? " has-logo" : ""}">
-              ${loadingMeta.logoUrl ? `<img class="player-loading-logo" src="${escapeAttribute(loadingMeta.logoUrl)}" alt="${escapeAttribute(loadingMeta.title || "logo")}" />` : ""}
+              ${loadingMeta.logoUrl ? `
+                <div class="player-loading-logo-stack">
+                  <img class="player-loading-logo player-loading-logo-base" src="${escapeAttribute(loadingMeta.logoUrl)}" alt="${escapeAttribute(loadingMeta.title || "logo")}" />
+                  <div class="player-loading-logo-fill-clip hidden">
+                    <img class="player-loading-logo player-loading-logo-fill" src="${escapeAttribute(loadingMeta.logoUrl)}" alt="" aria-hidden="true" />
+                  </div>
+                </div>
+              ` : ""}
               <div class="player-loading-title">${escapeHtml(loadingMeta.title || this.params.playerTitle || this.params.itemId || "Nuvio")}</div>
             </div>
             <div class="player-loading-subtitle${loadingMeta.subtitle ? "" : " hidden"}">${escapeHtml(loadingMeta.subtitle || "")}</div>
+            <div class="player-loading-status hidden"></div>
           </div>
         </div>
 
         <div id="playerBufferingSpinner" class="player-loading-spinner hidden" aria-hidden="true">
           <div class="player-loading-spinner-ring"></div>
+          <div class="player-loading-status player-loading-spinner-status hidden"></div>
+        </div>
+
+        <div id="playerStartupErrorOverlay" class="player-startup-error-overlay hidden" aria-hidden="true"></div>
+
+        <div id="playerTorrentOverlay" class="player-torrent-overlay hidden" aria-hidden="true">
+          <div class="player-torrent-overlay-row">
+            <span class="player-torrent-overlay-tag">P2P</span>
+            <span class="player-torrent-overlay-speed"></span>
+          </div>
+          <div class="player-torrent-overlay-detail"></div>
         </div>
 
         <div id="playerParentalGuide" class="player-parental-guide hidden"></div>
@@ -3656,10 +3750,19 @@ export const PlayerScreen = {
       root: uiRoot,
       loadingOverlay: uiRoot.querySelector("#playerLoadingOverlay"),
       bufferingSpinner: uiRoot.querySelector("#playerBufferingSpinner"),
+      startupErrorOverlay: uiRoot.querySelector("#playerStartupErrorOverlay"),
+      torrentOverlay: uiRoot.querySelector("#playerTorrentOverlay"),
+      torrentOverlaySpeed: uiRoot.querySelector("#playerTorrentOverlay .player-torrent-overlay-speed"),
+      torrentOverlayDetail: uiRoot.querySelector("#playerTorrentOverlay .player-torrent-overlay-detail"),
       loadingIdentity: uiRoot.querySelector(".player-loading-identity"),
-      loadingLogo: uiRoot.querySelector(".player-loading-logo"),
+      loadingLogoStack: uiRoot.querySelector(".player-loading-logo-stack"),
+      loadingLogoBase: uiRoot.querySelector(".player-loading-logo-base"),
+      loadingLogoFillClip: uiRoot.querySelector(".player-loading-logo-fill-clip"),
+      loadingLogoFill: uiRoot.querySelector(".player-loading-logo-fill"),
       loadingTitle: uiRoot.querySelector(".player-loading-title"),
       loadingSubtitle: uiRoot.querySelector(".player-loading-subtitle"),
+      loadingStatus: uiRoot.querySelector("#playerLoadingOverlay .player-loading-status"),
+      bufferingStatus: uiRoot.querySelector("#playerBufferingSpinner .player-loading-status"),
       parentalGuide: uiRoot.querySelector("#playerParentalGuide"),
       skipIntro: uiRoot.querySelector("#playerSkipIntro"),
       aspectToast: uiRoot.querySelector("#playerAspectToast"),
@@ -3680,7 +3783,8 @@ export const PlayerScreen = {
       endsAt: uiRoot.querySelector("#playerEndsAt"),
       progressFill: uiRoot.querySelector("#playerProgressFill"),
       controlButtons: uiRoot.querySelector("#playerControlButtons"),
-      timeLabel: uiRoot.querySelector("#playerTimeLabel")
+      timeLabel: uiRoot.querySelector("#playerTimeLabel"),
+      startupErrorButton: uiRoot.querySelector("#playerStartupErrorOverlay .player-startup-error-button")
     } : null;
     this.lastUiTickState = {
       progressWidth: "",
@@ -3695,6 +3799,7 @@ export const PlayerScreen = {
       progressFocused: false
     };
     this.refreshLoadingOverlayPresentation();
+    this.renderStartupErrorOverlay();
   },
 
   getLoadingOverlayMeta() {
@@ -3741,11 +3846,455 @@ export const PlayerScreen = {
     if (backdrop instanceof HTMLElement) {
       backdrop.style.backgroundImage = loadingMeta.backdropUrl ? `url('${loadingMeta.backdropUrl.replace(/'/g, "%27")}')` : "";
     }
+    this.syncLoadingOverlayStatus();
+    this.syncLoadingOverlayProgress();
+  },
+
+  getLoadingOverlayProgress(stats = null) {
+    const snapshot = stats ? this.getEngineFsStallSnapshot(stats) : null;
+    if (!snapshot) {
+      return null;
+    }
+    const directProgress = Number(snapshot.progress);
+    if (Number.isFinite(directProgress) && directProgress > 0) {
+      if (directProgress <= 1) {
+        return clamp(directProgress, 0, 1);
+      }
+      if (directProgress <= 100) {
+        return clamp(directProgress / 100, 0, 1);
+      }
+    }
+    const downloaded = Number(snapshot.downloaded);
+    if (Number.isFinite(downloaded) && downloaded > 0) {
+      return clamp(downloaded / (4 * 1024 * 1024), 0, 1);
+    }
+    return null;
+  },
+
+  getLoadingOverlayStatusText(stats = null) {
+    if (!this.currentEngineFsStream || TorrentSettingsStore.get().hideTorrentStats) {
+      return "";
+    }
+    const snapshot = stats ? this.getEngineFsStallSnapshot(stats) : null;
+    if (!snapshot) {
+      return "";
+    }
+    const peers = Number.isFinite(Number(snapshot.peers)) ? Math.max(0, Math.trunc(Number(snapshot.peers))) : 0;
+    const seeds = Number.isFinite(Number(snapshot.seeds)) ? Math.max(0, Math.trunc(Number(snapshot.seeds))) : null;
+    const peerInfo = seeds != null
+      ? t("player_torrent_peer_info", [seeds, peers], `${seeds} seeds · ${peers} peers`)
+      : `${peers} peers`;
+    const speed = formatBytesPerSecond(snapshot.downloadSpeed);
+    if (!this.hasPresentedPlaybackFrame) {
+      const buffered = formatBytes(snapshot.downloaded) || "0 B";
+      return `${buffered} buffered · ${peerInfo}${speed ? ` · ${speed}` : ""}`;
+    }
+    return `${peerInfo}${speed ? ` · ${speed}` : ""}`;
+  },
+
+  getTorrentOverlayData(stats = null) {
+    // These TV runtimes expose P2P/EngineFS stats through the runtime,
+    // so the overlay stays shared across WebOS and Tizen.
+    const supportsP2pStatsOverlay = Environment.isWebOS() || Environment.isTizen();
+    if (!supportsP2pStatsOverlay || !this.currentEngineFsStream || TorrentSettingsStore.get().hideTorrentStats || this.isExternalFrameMode() || this.error) {
+      return null;
+    }
+    const snapshot = stats ? this.getEngineFsStallSnapshot(stats) : null;
+    if (!snapshot) {
+      return null;
+    }
+    const downloadSpeed = formatBytesPerSecond(snapshot.downloadSpeed);
+    const uploadSpeed = formatBytesPerSecond(snapshot.uploadSpeed);
+    const peers = Number.isFinite(Number(snapshot.peers)) ? Math.max(0, Math.trunc(Number(snapshot.peers))) : 0;
+    const seeds = Number.isFinite(Number(snapshot.seeds)) ? Math.max(0, Math.trunc(Number(snapshot.seeds))) : null;
+    const progress = Number(snapshot.progress);
+    const progressPercent = Number.isFinite(progress) && progress > 0
+      ? (progress <= 1 ? progress * 100 : progress <= 100 ? progress : null)
+      : null;
+    const detailText = seeds != null && progressPercent != null
+      ? t("player_torrent_stats", [peers, seeds, Math.round(progressPercent)], `${peers} peers · ${seeds} seeds · ${Math.round(progressPercent)}%`)
+      : progressPercent != null
+        ? t("player_torrent_status", [`${peers} peers`, `${Math.round(progressPercent)}%`], `${peers} peers · ${Math.round(progressPercent)}%`)
+        : (seeds != null
+          ? t("player_torrent_peer_info", [seeds, peers], `${seeds} seeds · ${peers} peers`)
+          : `${peers} peers`);
+    const speedParts = [];
+    if (downloadSpeed) {
+      speedParts.push(`↓ ${downloadSpeed}`);
+    }
+    if (uploadSpeed) {
+      speedParts.push(`↑ ${uploadSpeed}`);
+    }
+    return {
+      speedText: speedParts.join(" · "),
+      detailText
+    };
+  },
+
+  syncTorrentOverlay() {
+    const overlay = this.uiRefs?.torrentOverlay;
+    const speedNode = this.uiRefs?.torrentOverlaySpeed;
+    const detailNode = this.uiRefs?.torrentOverlayDetail;
+    const data = this.torrentOverlayData;
+    const visible = Boolean(data);
+    if (overlay) {
+      overlay.classList.toggle("hidden", !visible);
+      overlay.setAttribute("aria-hidden", visible ? "false" : "true");
+    }
+    if (speedNode) {
+      speedNode.textContent = data?.speedText || "";
+      speedNode.classList.toggle("hidden", !data?.speedText);
+    }
+    if (detailNode) {
+      detailNode.textContent = data?.detailText || "";
+      detailNode.classList.toggle("hidden", !data?.detailText);
+    }
+  },
+
+  syncLoadingOverlayStatus() {
+    const loadingStatus = this.uiRefs?.loadingStatus;
+    const bufferingStatus = this.uiRefs?.bufferingStatus;
+    const subtitle = this.uiRefs?.loadingSubtitle;
+    const statusText = String(this.loadingTorrentStatus || "").trim();
+    const hasStatus = Boolean(statusText);
+    const hasSubtitle = Boolean(subtitle?.textContent?.trim());
+    if (loadingStatus) {
+      loadingStatus.textContent = statusText;
+      loadingStatus.classList.toggle("hidden", !hasStatus);
+    }
+    if (bufferingStatus) {
+      bufferingStatus.textContent = statusText;
+      bufferingStatus.classList.toggle("hidden", !hasStatus);
+    }
+    if (subtitle) {
+      subtitle.classList.toggle("hidden", !hasSubtitle || hasStatus);
+    }
+  },
+
+  isStartupErrorVisible() {
+    return Boolean(String(this.startupErrorMessage || "").trim());
+  },
+
+  clearStartupError() {
+    this.startupErrorMessage = "";
+    this.startupErrorMediaCode = 0;
+    this.renderStartupErrorOverlay();
+  },
+
+  showStartupError(message = "", { mediaErrorCode = 0 } = {}) {
+    this.startupErrorMessage = String(message || "").trim() || t("player_error_playback_fallback", {}, "Playback error");
+    this.startupErrorMediaCode = Number(mediaErrorCode || 0);
+    this.lastPlaybackErrorAt = 0;
+    this.loadingVisible = false;
+    this.loadingProgress = null;
+    this.loadingTorrentStatus = "";
+    this.loadingLogoFillActive = false;
+    this.loadingLogoFillProgress = 0;
+    this.loadingLogoFillTarget = 0;
+    this.stopLoadingLogoFillAnimation();
+    this.clearPlaybackStallGuard();
+    this.clearBufferingSpinnerTimer();
+    this.releaseStartupAudioGate({ resume: false });
+    this.sourcesLoading = false;
+    this.sourcesError = "";
+    this.sourcesPanelVisible = false;
+    this.subtitleDialogVisible = false;
+    this.audioDialogVisible = false;
+    this.speedDialogVisible = false;
+    this.episodePanelVisible = false;
+    this.moreActionsVisible = false;
+    this.seekOverlayVisible = false;
+    this.seekPreviewSeconds = null;
+    this.pauseOverlayVisible = false;
+    this.updateLoadingVisibility();
+    this.renderControlButtons();
+    this.renderSourcesPanel();
+    this.renderSubtitleDialog();
+    this.renderAudioDialog();
+    this.renderSpeedDialog();
+    this.renderEpisodePanel();
+    this.renderPauseOverlay();
+    this.renderStartupErrorOverlay();
+    this.focusStartupErrorButton();
+  },
+
+  getStartupErrorMessage(mediaErrorCode = 0, detail = "", streamCandidate = this.getCurrentStreamCandidate()) {
+    const code = Number(mediaErrorCode || 0);
+    const baseMessage = this.mediaErrorMessage(code, detail, streamCandidate);
+    const extra = String(detail || "").trim();
+    if (!extra || (code === 4 && this.isDebridPlaybackCandidate(streamCandidate))) {
+      return `${baseMessage}.`;
+    }
+    const normalizedExtra = extra.replace(/\s+/g, " ");
+    if (baseMessage.toLowerCase().includes(normalizedExtra.toLowerCase())) {
+      return baseMessage;
+    }
+    return `${baseMessage}. ${normalizedExtra}`;
+  },
+
+  focusStartupErrorButton() {
+    const button = this.uiRefs?.startupErrorButton;
+    if (button?.focus) {
+      button.focus();
+    }
+    button?.classList?.add("focused");
+  },
+
+  renderStartupErrorOverlay() {
+    const overlay = this.uiRefs?.startupErrorOverlay;
+    if (!overlay) {
+      return;
+    }
+    const visible = this.isStartupErrorVisible();
+    overlay.classList.toggle("hidden", !visible);
+    overlay.setAttribute("aria-hidden", visible ? "false" : "true");
+    if (!visible) {
+      overlay.innerHTML = "";
+      return;
+    }
+    const message = String(this.startupErrorMessage || "").trim() || t("player_error_playback_fallback", {}, "Playback error");
+    overlay.innerHTML = `
+      <div class="player-startup-error-shell">
+        <div class="player-startup-error-title">${escapeHtml(t("player_error_title", {}, "Playback Error"))}</div>
+        <div class="player-startup-error-message">${escapeHtml(message)}</div>
+        <button class="player-startup-error-button focusable focused" type="button" tabindex="-1" data-player-error-action="back">
+          ${escapeHtml(t("player_go_back", {}, "Go Back"))}
+        </button>
+      </div>
+    `;
+    this.uiRefs = {
+      ...(this.uiRefs || {}),
+      startupErrorButton: overlay.querySelector(".player-startup-error-button")
+    };
+  },
+
+  shouldUseLoadingLogoFill() {
+    return Boolean(this.currentEngineFsStream && !this.isExternalFrameMode());
+  },
+
+  stopLoadingLogoFillAnimation() {
+    if (this.loadingLogoFillFrame != null) {
+      clearTimeout(this.loadingLogoFillFrame);
+      this.loadingLogoFillFrame = null;
+    }
+  },
+
+  scheduleLoadingLogoFillAnimation() {
+    if (this.loadingLogoFillFrame != null || !this.loadingLogoFillActive) {
+      return;
+    }
+    this.loadingLogoFillFrame = setTimeout(() => {
+      this.loadingLogoFillFrame = null;
+      if (!this.loadingLogoFillActive) {
+        return;
+      }
+      const current = clamp(Number(this.loadingLogoFillProgress || 0), 0, 1);
+      const target = clamp(Number(this.loadingLogoFillTarget ?? current), current, 1);
+      if (current >= 1 || target <= current) {
+        this.syncLoadingOverlayProgress();
+        return;
+      }
+      const distance = target - current;
+      const step = Math.max(LOADING_LOGO_FILL_IDLE_STEP, distance * LOADING_LOGO_FILL_TARGET_LERP);
+      this.loadingLogoFillProgress = Math.min(target, current + step);
+      this.syncLoadingOverlayProgress();
+      if (this.loadingLogoFillProgress < target) {
+        this.scheduleLoadingLogoFillAnimation();
+      }
+    }, LOADING_LOGO_FILL_FRAME_MS);
+  },
+
+  setLoadingLogoFillTarget(progress = null, { immediate = false } = {}) {
+    if (!this.shouldUseLoadingLogoFill()) {
+      this.loadingLogoFillActive = false;
+      this.loadingLogoFillProgress = 0;
+      this.loadingLogoFillTarget = 0;
+      this.stopLoadingLogoFillAnimation();
+      this.syncLoadingOverlayProgress();
+      return;
+    }
+    const parsed = Number(progress);
+    if (!Number.isFinite(parsed)) {
+      return;
+    }
+    const current = clamp(Number(this.loadingLogoFillProgress || 0), 0, 1);
+    const target = clamp(parsed, current, 1);
+    this.loadingLogoFillActive = true;
+    this.loadingLogoFillTarget = Math.max(Number(this.loadingLogoFillTarget || 0), target);
+    if (immediate) {
+      this.loadingLogoFillProgress = Math.max(current, target);
+    }
+    this.syncLoadingOverlayProgress();
+    this.scheduleLoadingLogoFillAnimation();
+  },
+
+  syncLoadingOverlayProgress() {
+    const identity = this.uiRefs?.loadingIdentity;
+    const stack = this.uiRefs?.loadingLogoStack;
+    const base = this.uiRefs?.loadingLogoBase;
+    const fillClip = this.uiRefs?.loadingLogoFillClip;
+    if (this.isStartupErrorVisible()) {
+      if (identity) {
+        identity.classList.remove("is-loading-progress");
+      }
+      if (stack) {
+        stack.classList.remove("is-loading-progress");
+      }
+      if (base) {
+        base.style.opacity = "";
+      }
+      if (fillClip) {
+        fillClip.classList.add("hidden");
+        fillClip.style.width = "0%";
+      }
+      return;
+    }
+    if (!this.shouldUseLoadingLogoFill()) {
+      this.loadingLogoFillActive = false;
+      this.loadingLogoFillProgress = 0;
+      this.loadingLogoFillTarget = 0;
+      this.stopLoadingLogoFillAnimation();
+      if (identity) {
+        identity.classList.remove("is-loading-progress");
+      }
+      if (stack) {
+        stack.classList.remove("is-loading-progress");
+      }
+      if (base) {
+        base.style.opacity = "";
+      }
+      if (fillClip) {
+        fillClip.classList.add("hidden");
+        fillClip.style.width = "0%";
+      }
+      return;
+    }
+    const progress = Number(this.loadingProgress);
+    const hasProgress = Number.isFinite(progress) && progress > 0;
+    if (hasProgress) {
+      this.loadingLogoFillActive = true;
+      this.loadingLogoFillTarget = Math.max(
+        Number(this.loadingLogoFillTarget || 0),
+        clamp(progress, 0, 1)
+      );
+    }
+    if (this.currentEngineFsStream && this.hasPresentedPlaybackFrame && !this.isExternalFrameMode()) {
+      this.loadingLogoFillActive = true;
+      this.loadingLogoFillTarget = 1;
+    }
+    const showFill = Boolean(this.loadingLogoFillActive);
+    if (identity) {
+      identity.classList.toggle("is-loading-progress", showFill);
+    }
+    if (stack) {
+      stack.classList.toggle("is-loading-progress", showFill);
+    }
+    if (base) {
+      base.style.opacity = showFill ? "0.25" : "";
+    }
+    if (fillClip) {
+      fillClip.classList.toggle("hidden", !showFill);
+      if (showFill) {
+        const visiblePercent = Math.round(clamp(this.loadingLogoFillProgress || 0, 0, 1) * 10000) / 100;
+        fillClip.style.width = `${visiblePercent}%`;
+      } else {
+        fillClip.style.width = "0%";
+      }
+    }
+    if (showFill && clamp(Number(this.loadingLogoFillProgress || 0), 0, 1) < clamp(Number(this.loadingLogoFillTarget || 0), 0, 1)) {
+      this.scheduleLoadingLogoFillAnimation();
+    }
+  },
+
+  async refreshLoadingOverlayProgress() {
+    if (this.isStartupErrorVisible()) {
+      return;
+    }
+    if (this.loadingProgressRefreshInFlight) {
+      return;
+    }
+    const canShowLoadingProgress = Boolean(
+      this.loadingVisible
+      && this.currentEngineFsStream
+      && !this.hasPresentedPlaybackFrame
+      && !this.isExternalFrameMode()
+    );
+    const canShowTorrentOverlay = Boolean(
+      this.currentEngineFsStream
+      && !this.isExternalFrameMode()
+      && !TorrentSettingsStore.get().hideTorrentStats
+    );
+    if (!canShowLoadingProgress && !canShowTorrentOverlay) {
+      if (this.loadingProgress != null) {
+        this.loadingProgress = null;
+        this.loadingLogoFillTarget = 0;
+        this.stopLoadingLogoFillAnimation();
+        this.syncLoadingOverlayProgress();
+      }
+      if (this.loadingTorrentStatus) {
+        this.loadingTorrentStatus = "";
+        this.syncLoadingOverlayStatus();
+      }
+      if (this.torrentOverlayData) {
+        this.torrentOverlayData = null;
+        this.syncTorrentOverlay();
+      }
+      return;
+    }
+
+    this.loadingProgressRefreshInFlight = true;
+    try {
+      const stats = await this.fetchCurrentEngineFsStats({ timeoutMs: 1200 });
+      if (
+        !this.currentEngineFsStream
+        || this.isExternalFrameMode()
+        || this.isStartupErrorVisible()
+      ) {
+        if (this.loadingProgress != null) {
+          this.loadingProgress = null;
+          this.loadingLogoFillTarget = 0;
+          this.stopLoadingLogoFillAnimation();
+          this.syncLoadingOverlayProgress();
+        }
+        if (this.loadingTorrentStatus) {
+          this.loadingTorrentStatus = "";
+          this.syncLoadingOverlayStatus();
+        }
+        if (this.torrentOverlayData) {
+          this.torrentOverlayData = null;
+          this.syncTorrentOverlay();
+        }
+        return;
+      }
+      const nextProgress = canShowLoadingProgress ? this.getLoadingOverlayProgress(stats) : null;
+      if (nextProgress != null && nextProgress !== this.loadingProgress) {
+        this.loadingProgress = nextProgress;
+        this.syncLoadingOverlayProgress();
+      } else if (!canShowLoadingProgress && this.loadingProgress != null) {
+        this.loadingProgress = null;
+        this.loadingLogoFillTarget = 0;
+        this.stopLoadingLogoFillAnimation();
+        this.syncLoadingOverlayProgress();
+      }
+      const nextStatus = this.getLoadingOverlayStatusText(stats);
+      if (nextStatus !== this.loadingTorrentStatus) {
+        this.loadingTorrentStatus = nextStatus;
+        this.syncLoadingOverlayStatus();
+      }
+      const nextTorrentOverlay = canShowTorrentOverlay ? this.getTorrentOverlayData(stats) : null;
+      if (JSON.stringify(nextTorrentOverlay) !== JSON.stringify(this.torrentOverlayData)) {
+        this.torrentOverlayData = nextTorrentOverlay;
+        this.syncTorrentOverlay();
+      }
+    } finally {
+      this.loadingProgressRefreshInFlight = false;
+    }
   },
 
   bindLoadingLogoFallback() {
     const identity = this.uiRefs?.loadingIdentity;
-    const logo = this.uiRefs?.loadingLogo;
+    const logo = this.uiRefs?.loadingLogoBase;
+    const fill = this.uiRefs?.loadingLogoFill;
     if (!identity || !logo) {
       return;
     }
@@ -3753,10 +4302,27 @@ export const PlayerScreen = {
     const showLogo = () => {
       identity.classList.add("logo-loaded");
       identity.classList.remove("logo-failed");
+      if (fill && logo.getAttribute("src")) {
+        fill.setAttribute("src", logo.getAttribute("src"));
+      }
+      this.syncLoadingOverlayProgress();
     };
     const showTitleFallback = () => {
       identity.classList.add("logo-failed");
       identity.classList.remove("logo-loaded");
+      if (fill) {
+        fill.removeAttribute("src");
+      }
+      this.loadingProgress = null;
+      this.loadingLogoFillActive = false;
+      this.loadingLogoFillProgress = 0;
+      this.loadingLogoFillTarget = 0;
+      this.stopLoadingLogoFillAnimation();
+      this.loadingTorrentStatus = "";
+      this.torrentOverlayData = null;
+      this.syncLoadingOverlayProgress();
+      this.syncLoadingOverlayStatus();
+      this.syncTorrentOverlay();
     };
 
     logo.addEventListener("load", showLogo, { once: true });
@@ -4298,7 +4864,8 @@ export const PlayerScreen = {
     });
     void Router.navigate("stream", this.buildStreamRouteParamsFromPlayer(), {
       skipStackPush: true,
-      replaceHistory: true
+      replaceHistory: true,
+      isBackNavigation: true
     });
     return true;
   },
@@ -5000,6 +5567,9 @@ export const PlayerScreen = {
     );
 
     const onWaiting = () => {
+      if (this.isStartupErrorVisible()) {
+        return;
+      }
       if (isTizenAvPlayPlayback() && this.hasPresentedPlaybackFrame && this.getPlaybackCurrentSeconds() > 0) {
         this.loadingVisible = false;
         this.updateLoadingVisibility();
@@ -5015,6 +5585,9 @@ export const PlayerScreen = {
     };
 
     const onPlaying = () => {
+      if (this.isStartupErrorVisible()) {
+        return;
+      }
       this.seekLoading = false;
       if (isTizenAvPlayPlayback()) {
         this.lastPlaybackErrorAt = 0;
@@ -5024,13 +5597,10 @@ export const PlayerScreen = {
           this.updateLoadingVisibility();
           this.updateUiTick();
           this.schedulePlaybackStallGuard({ timeoutMs: 12000 });
+          this.scheduleLoadingCompletionCheck(250);
           return;
         }
-        this.hasPresentedPlaybackFrame = true;
-        this.loadingVisible = false;
         this.markPlaybackProgress();
-        this.releaseStartupAudioGate();
-        this.clearPlaybackStallGuard();
         this.paused = false;
         this.seekOverlaySuppressControlsUntil = 0;
         this.startupTrackPreferenceReady = true;
@@ -5041,7 +5611,10 @@ export const PlayerScreen = {
         this.applySubtitlePresentationSettings();
         this.applyAspectMode({ showToast: false });
         this.attemptPendingPlaybackRestore();
+        this.setLoadingLogoFillTarget(1);
+        this.markPlaybackPresentedAfterAdvance();
         this.updateLoadingVisibility();
+        this.scheduleLoadingCompletionCheck(250);
         this.updateUiTick();
         this.resetControlsAutoHide();
         this.maybeShowParentalGuideOverlay();
@@ -5053,6 +5626,7 @@ export const PlayerScreen = {
         this.paused = false;
         this.updateMediaSessionPlaybackState();
         this.schedulePlaybackStallGuard({ timeoutMs: 12000 });
+        this.scheduleLoadingCompletionCheck(250);
         this.updateUiTick();
         return;
       }
@@ -5072,9 +5646,7 @@ export const PlayerScreen = {
       }
       this.lastPlaybackErrorAt = 0;
       this.sourcesError = "";
-      this.hasPresentedPlaybackFrame = true;
       this.markPlaybackProgress();
-      this.clearPlaybackStallGuard();
       this.paused = false;
       this.seekOverlaySuppressControlsUntil = 0;
       this.startupTrackPreferenceReady = true;
@@ -5085,6 +5657,9 @@ export const PlayerScreen = {
       this.applySubtitlePresentationSettings();
       this.applyAspectMode({ showToast: false });
       this.attemptPendingPlaybackRestore();
+      this.setLoadingLogoFillTarget(1);
+      this.markPlaybackPresentedAfterAdvance();
+      this.updateLoadingVisibility();
       this.updateUiTick();
       this.scheduleLoadingCompletionCheck(900);
       if (this.stickyProgressFocus && this.controlsVisible) {
@@ -5123,23 +5698,29 @@ export const PlayerScreen = {
     };
 
     const onTimeUpdate = () => {
+      if (this.isStartupErrorVisible()) {
+        return;
+      }
       if (
         isTizenAvPlayPlayback()
         && this.loadingVisible
         && (!this.currentEngineFsStream || this.isEngineFsStartupReady())
       ) {
-        this.hasPresentedPlaybackFrame = true;
-        this.loadingVisible = false;
-        this.releaseStartupAudioGate();
-        this.clearPlaybackStallGuard();
+        this.setLoadingLogoFillTarget(1);
+        this.markPlaybackPresentedAfterAdvance();
         this.updateLoadingVisibility();
+        this.scheduleLoadingCompletionCheck(180);
       }
       if (this.currentEngineFsStream && !this.hasPresentedPlaybackFrame && this.isEngineFsStartupReady()) {
-        this.hasPresentedPlaybackFrame = true;
-        this.loadingVisible = false;
-        this.releaseStartupAudioGate();
-        this.clearPlaybackStallGuard();
+        this.setLoadingLogoFillTarget(1);
+        this.markPlaybackPresentedAfterAdvance();
         this.updateLoadingVisibility();
+        this.scheduleLoadingCompletionCheck(180);
+      }
+      if (this.loadingVisible && !this.hasPresentedPlaybackFrame) {
+        this.markPlaybackPresentedAfterAdvance();
+        this.updateLoadingVisibility();
+        this.scheduleLoadingCompletionCheck(120);
       }
       this.markPlaybackProgress();
       this.attemptPendingPlaybackRestore();
@@ -5147,6 +5728,9 @@ export const PlayerScreen = {
     };
 
     const onLoadedMetadata = () => {
+      if (this.isStartupErrorVisible()) {
+        return;
+      }
       this.attemptPendingPlaybackRestore({ force: true });
 
       this.startupTrackPreferenceReady = true;
@@ -5168,12 +5752,16 @@ export const PlayerScreen = {
     };
 
     const onPlayable = () => {
+      if (this.isStartupErrorVisible()) {
+        return;
+      }
       this.seekLoading = false;
       this.attemptPendingPlaybackRestore();
       this.startupTrackPreferenceReady = true;
       this.refreshTrackDialogs();
       this.applySubtitlePresentationSettings();
       this.applyAspectMode({ showToast: false });
+      this.scheduleLoadingCompletionCheck(120);
       this.updateUiTick();
     };
 
@@ -5187,6 +5775,9 @@ export const PlayerScreen = {
     };
 
     const onError = async (event) => {
+      if (this.isStartupErrorVisible()) {
+        return;
+      }
       this.seekLoading = false;
       const now = Date.now();
       if ((now - Number(this.lastPlaybackErrorAt || 0)) < 120) {
@@ -5200,6 +5791,7 @@ export const PlayerScreen = {
         : 0;
       const mediaErrorCode = detailErrorCode || Number(video?.error?.code || 0) || controllerErrorCode;
       const avplayError = String(event?.detail?.avplayError || "").toLowerCase();
+      const currentSourceCandidate = this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
       const currentEngineFsState = this.currentEngineFsStream || null;
       const publicEngineFsUrl = String(currentEngineFsState?.publicPlaybackUrl || "").trim();
       const isLocalEngineFsNetworkFailure = currentEngineFsState?.baseUrlKind === "local-service"
@@ -5289,27 +5881,17 @@ export const PlayerScreen = {
           });
           return;
         }
-
-        const fallbackCandidate = currentEngineFsState
-          ? null
-          : this.findStartupPlaybackFallbackCandidate();
-        if (fallbackCandidate) {
-          this.lastPlaybackErrorAt = 0;
-          this.loadingVisible = true;
-          this.paused = false;
-          this.sourcesError = null;
-          this.updateLoadingVisibility();
-          console.warn("Playback failed during startup; trying next source", {
-            url: this.activePlaybackUrl,
-            mediaErrorCode,
-            nextSource: fallbackCandidate.url || fallbackCandidate.externalUrl || fallbackCandidate.id || ""
-          });
-          void this.playStreamCandidate(fallbackCandidate, {
-            preservePanel: true,
-            resetSilentAudioState: false
-          });
-          return;
-        }
+        this.markPlaybackSourceFailed(this.activePlaybackUrl);
+        const startupErrorMessage = this.getStartupErrorMessage(mediaErrorCode, avplayError, currentSourceCandidate);
+        this.clearPlaybackStallGuard();
+        this.releaseStartupAudioGate({ resume: false });
+        this.showStartupError(startupErrorMessage, { mediaErrorCode });
+        console.warn("Playback failed during startup", {
+          url: this.activePlaybackUrl,
+          mediaErrorCode,
+          avplayError
+        });
+        return;
       }
 
       this.markPlaybackSourceFailed(this.activePlaybackUrl);
@@ -5321,7 +5903,7 @@ export const PlayerScreen = {
       this.dismissPauseOverlay();
       this.updateLoadingVisibility();
       this.setControlsVisible(true, { focus: false });
-      this.sourcesError = `${this.mediaErrorMessage(mediaErrorCode)}. Choose another source manually.`;
+      this.sourcesError = `${this.mediaErrorMessage(mediaErrorCode, avplayError, currentSourceCandidate)}. Choose another source manually.`;
       if (this.currentEngineFsStream) {
         logEngineFsDebug("EngineFS playback failed; keeping torrent alive until player exit or source change", {
           reason: "playback-error",
@@ -5587,7 +6169,18 @@ export const PlayerScreen = {
   },
 
   isBufferingSpinnerVisible() {
-    return Boolean(this.loadingVisible && this.hasPresentedPlaybackFrame);
+    if (!this.loadingVisible || !this.hasPresentedPlaybackFrame || this.isExternalFrameMode() || this.isStartupErrorVisible()) {
+      return false;
+    }
+    const currentSeconds = Number(this.getPlaybackCurrentSeconds());
+    const baselineSeconds = Number(this.bufferingSpinnerBaselineSeconds);
+    if (Number.isFinite(currentSeconds) && Number.isFinite(baselineSeconds)) {
+      if (currentSeconds > (baselineSeconds + STARTUP_PLAYBACK_ADVANCE_EPSILON_SECONDS)) {
+        return false;
+      }
+    }
+    const stalledForMs = Date.now() - Number(this.lastPlaybackProgressAt || 0);
+    return stalledForMs >= BUFFERING_SPINNER_STALL_MS;
   },
 
   isSeekBarAvailable() {
@@ -5615,6 +6208,27 @@ export const PlayerScreen = {
     }
   },
 
+  clearBufferingSpinnerTimer() {
+    if (this.bufferingSpinnerTimer) {
+      clearTimeout(this.bufferingSpinnerTimer);
+      this.bufferingSpinnerTimer = null;
+    }
+  },
+
+  scheduleBufferingSpinnerRefresh(delayMs = BUFFERING_SPINNER_STALL_MS) {
+    this.clearBufferingSpinnerTimer();
+    if (!this.loadingVisible || !this.hasPresentedPlaybackFrame || this.isExternalFrameMode() || this.isStartupErrorVisible()) {
+      return;
+    }
+    this.bufferingSpinnerTimer = setTimeout(() => {
+      this.bufferingSpinnerTimer = null;
+      if (!this.loadingVisible || !this.hasPresentedPlaybackFrame || this.isExternalFrameMode() || this.isStartupErrorVisible()) {
+        return;
+      }
+      this.updateLoadingVisibility();
+    }, Math.max(0, Number(delayMs || 0)));
+  },
+
   enableStartupAudioGate() {
     this.startupAudioGateActive = true;
     PlayerController.setStartupAudioGate?.(true);
@@ -5629,34 +6243,80 @@ export const PlayerScreen = {
   },
 
   isPlaybackStartupSettled() {
-    if (this.currentEngineFsStream && !this.hasPresentedPlaybackFrame) {
+    if (!this.hasPresentedPlaybackFrame || this.pendingPlaybackRestore || this.startupAudioGateActive) {
       return false;
     }
-    const avplayReadyBehindGate = Boolean(
-      this.startupAudioGateActive
-      && typeof PlayerController.isUsingAvPlay === "function"
-      && PlayerController.isUsingAvPlay()
-      && typeof PlayerController.getPlaybackReadyState === "function"
-      && Number(PlayerController.getPlaybackReadyState() || 0) >= 3
-    );
-    const nativeReadyBehindGate = Boolean(
-      this.startupAudioGateActive
-      && !(typeof PlayerController.isUsingAvPlay === "function" && PlayerController.isUsingAvPlay())
-      && typeof PlayerController.getPlaybackReadyState === "function"
-      && Number(PlayerController.getPlaybackReadyState() || 0) >= 3
-    );
-    if ((!this.hasPresentedPlaybackFrame && !avplayReadyBehindGate && !nativeReadyBehindGate) || this.pendingPlaybackRestore) {
-      return false;
-    }
-    return !this.trackDiscoveryInProgress
-      && !this.subtitleLoading
-      && !this.embeddedSubtitleLoading
-      && !this.manifestLoading
-      && !this.startupAudioPreferenceApplying
-      && !this.startupSubtitlePreferenceApplying;
+    return true;
   },
 
-  scheduleLoadingCompletionCheck(delayMs = 250) {
+  hasStartupPlaybackAdvanced(currentSeconds = this.getPlaybackCurrentSeconds()) {
+    if (this.startupPlaybackHasAdvanced) {
+      return true;
+    }
+    if (this.pendingPlaybackRestore) {
+      this.startupPlaybackBaselineSeconds = null;
+      return false;
+    }
+    const current = Number(currentSeconds);
+    if (!Number.isFinite(current) || current < 0) {
+      return false;
+    }
+    const baseline = Number(this.startupPlaybackBaselineSeconds);
+    if (!Number.isFinite(baseline)) {
+      this.startupPlaybackBaselineSeconds = current;
+      return false;
+    }
+    if (current < baseline - 0.25) {
+      this.startupPlaybackBaselineSeconds = current;
+      return false;
+    }
+    if ((current - baseline) >= STARTUP_PLAYBACK_ADVANCE_EPSILON_SECONDS) {
+      this.startupPlaybackHasAdvanced = true;
+      return true;
+    }
+    return false;
+  },
+
+  markPlaybackPresentedAfterAdvance(currentSeconds = this.getPlaybackCurrentSeconds()) {
+    if (this.hasPresentedPlaybackFrame) {
+      return true;
+    }
+    if (!this.hasStartupPlaybackAdvanced(currentSeconds)) {
+      return false;
+    }
+    this.hasPresentedPlaybackFrame = true;
+    if (!this.startupTrackPreferenceReady) {
+      // Some P2P / engineFs startups expose tracks before the first real frame
+      // is presented. Re-run the startup track pass once playback is actually live.
+      this.startupTrackPreferenceReady = true;
+      this.refreshTrackDialogs();
+    }
+    this.setLoadingLogoFillTarget(1);
+    this.releaseStartupAudioGate();
+    this.clearPlaybackStallGuard();
+    return true;
+  },
+
+  isStartupLogoDismissReady() {
+    return Boolean(
+      this.hasPresentedPlaybackFrame
+      && this.startupPlaybackHasAdvanced
+      && !this.pendingPlaybackRestore
+      && !this.startupAudioGateActive
+    );
+  },
+
+  isStartupGateReleaseReady() {
+    if (!this.startupAudioGateActive || this.pendingPlaybackRestore) {
+      return false;
+    }
+    const readyState = typeof PlayerController.getPlaybackReadyState === "function"
+      ? Number(PlayerController.getPlaybackReadyState() || 0)
+      : Number(PlayerController.video?.readyState || 0);
+    return Number.isFinite(readyState) && readyState >= 3;
+  },
+
+  scheduleLoadingCompletionCheck(delayMs = 250, { force = false } = {}) {
     this.clearLoadingCompletionTimer();
     if (!this.loadingVisible || this.isExternalFrameMode()) {
       return;
@@ -5666,12 +6326,49 @@ export const PlayerScreen = {
       if (!this.loadingVisible || this.isExternalFrameMode()) {
         return;
       }
-      if (!this.isPlaybackStartupSettled()) {
+      if (this.isStartupGateReleaseReady()) {
+        this.releaseStartupAudioGate();
+        this.scheduleLoadingCompletionCheck(120, { force: true });
+        return;
+      }
+      const fillProgress = Number(this.loadingLogoFillProgress || 0);
+      if (fillProgress >= 1 && !this.isPlaybackStartupSettled()) {
+        this.markPlaybackPresentedAfterAdvance();
+        if (this.isStartupLogoDismissReady()) {
+          this.loadingVisible = false;
+          this.updateLoadingVisibility();
+          this.updateUiTick();
+          setTimeout(() => this.maybeShowParentalGuideOverlay(), 80);
+          return;
+        }
+        this.updateUiTick();
+        this.scheduleLoadingCompletionCheck(180, { force: true });
+        return;
+      }
+      if (!force && !this.isPlaybackStartupSettled()) {
         this.scheduleLoadingCompletionCheck(250);
+        return;
+      }
+      if (this.loadingProgress != null && fillProgress < 1) {
+        this.loadingProgress = 1;
+        this.setLoadingLogoFillTarget(1);
+        this.scheduleLoadingCompletionCheck(180, { force: true });
+        return;
+      }
+      if (!this.markPlaybackPresentedAfterAdvance()) {
+        this.scheduleLoadingCompletionCheck(120, { force: true });
+        return;
+      }
+      const currentFillProgress = Number(this.loadingLogoFillProgress || 0);
+      const currentFillTarget = Number(this.loadingLogoFillTarget || 0);
+      if (currentFillTarget >= 1 && currentFillProgress < 0.995) {
+        this.scheduleLoadingCompletionCheck(120, { force: true });
         return;
       }
       this.loadingVisible = false;
       this.updateLoadingVisibility();
+      this.updateUiTick();
+      setTimeout(() => this.maybeShowParentalGuideOverlay(), 80);
     }, Math.max(0, Number(delayMs || 0)));
   },
 
@@ -5711,14 +6408,22 @@ export const PlayerScreen = {
     return Number.isFinite(durationSeconds) && durationSeconds > 0;
   },
 
+  isPlaybackFrameReady() {
+    const readyState = typeof PlayerController.getPlaybackReadyState === "function"
+      ? Number(PlayerController.getPlaybackReadyState() || 0)
+      : Number(PlayerController.video?.readyState || 0);
+    return Number.isFinite(readyState) && readyState >= 2;
+  },
+
   isEngineFsStartupReady() {
     if (!this.currentEngineFsStream) {
       return true;
     }
     const currentSeconds = Number(this.getPlaybackCurrentSeconds() || 0);
-    return this.hasKnownPlaybackDuration()
+    return this.isPlaybackFrameReady()
+      || (this.hasKnownPlaybackDuration()
       && Number.isFinite(currentSeconds)
-      && currentSeconds > 0.2;
+      && currentSeconds > 0.2);
   },
 
   seekPlaybackSeconds(seconds) {
@@ -5745,6 +6450,11 @@ export const PlayerScreen = {
       return;
     }
     this.pendingPlaybackRestore = null;
+    const currentSeconds = this.getPlaybackCurrentSeconds();
+    this.startupPlaybackBaselineSeconds = Number.isFinite(currentSeconds)
+      ? currentSeconds
+      : null;
+    this.startupPlaybackHasAdvanced = false;
     if (restore.paused) {
       PlayerController.pause();
       this.paused = true;
@@ -5798,7 +6508,14 @@ export const PlayerScreen = {
     if (!overlay) {
       if (!this.loadingVisible) {
         this.releaseStartupAudioGate();
+        this.clearBufferingSpinnerTimer();
       }
+      return;
+    }
+    if (this.isStartupErrorVisible()) {
+      overlay.classList.add("hidden");
+      bufferingSpinner?.classList.add("hidden");
+      this.clearBufferingSpinnerTimer();
       return;
     }
     const showStartupOverlay = this.isStartupLoadingVisible();
@@ -5818,8 +6535,17 @@ export const PlayerScreen = {
     overlay.classList.toggle("hidden", !showStartupOverlay);
     overlay.classList.remove("seek-only", "logo-only");
     bufferingSpinner?.classList.toggle("hidden", !showBufferingSpinner);
+    if (!showStartupOverlay && this.loadingProgress != null) {
+      this.loadingProgress = 1;
+      this.setLoadingLogoFillTarget(1);
+    }
+    if (!showStartupOverlay && this.loadingTorrentStatus) {
+      this.loadingTorrentStatus = "";
+      this.syncLoadingOverlayStatus();
+    }
     if (!this.loadingVisible) {
       this.seekLoading = false;
+      this.clearBufferingSpinnerTimer();
     }
     if (showStartupOverlay) {
       this.dismissPauseOverlay();
@@ -5839,6 +6565,9 @@ export const PlayerScreen = {
         this.renderSeekOverlay();
       }
     } else if (!showBufferingSpinner) {
+      if (!this.loadingVisible) {
+        this.clearBufferingSpinnerTimer();
+      }
       this.releaseStartupAudioGate();
       if (this.paused) {
         this.schedulePauseOverlay();
@@ -5895,6 +6624,7 @@ export const PlayerScreen = {
     if (!this.shouldShowNextEpisodeCard()) {
       this.resetNextEpisodeCardDismissal();
     }
+    void this.refreshLoadingOverlayProgress();
     const current = this.getPlaybackCurrentSeconds();
     this.updateActiveSkipInterval(current);
     this.updateSkipIntroCountdown(Date.now());
@@ -6354,8 +7084,13 @@ export const PlayerScreen = {
     }
 
     this.hasPresentedPlaybackFrame = false;
+    this.startupPlaybackBaselineSeconds = null;
+    this.startupPlaybackHasAdvanced = false;
+    this.bufferingSpinnerBaselineSeconds = null;
+    this.clearStartupError();
     this.loadingVisible = true;
     this.updateLoadingVisibility();
+    this.clearBufferingSpinnerTimer();
     if (nextEngineFsState) {
       this.releaseStartupAudioGate({ resume: false });
     } else {
@@ -6421,6 +7156,9 @@ export const PlayerScreen = {
     this.lastEmbeddedTrackProbeUrl = "";
     this.lastEmbeddedTrackRetryAt = 0;
     this.lastTrackWarmupAt = Date.now();
+    this.loadSubtitles();
+    this.loadManifestTrackDataForCurrentStream(this.activePlaybackUrl);
+    this.startTrackDiscoveryWindow();
     if (this.currentEngineFsStream) {
       this.initialEmbeddedTrackBootstrapPromise = null;
     } else {
@@ -6442,9 +7180,6 @@ export const PlayerScreen = {
       forceEngine
     });
     this.paused = false;
-    this.loadSubtitles();
-    this.loadManifestTrackDataForCurrentStream(this.activePlaybackUrl);
-    this.startTrackDiscoveryWindow();
     this.refreshTrackDialogs();
     this.updateUiTick();
     this.setControlsVisible(true, { focus: false });
@@ -6463,7 +7198,7 @@ export const PlayerScreen = {
       };
       const canUseEngineFs = WebOsEngineFsResolver.canResolveStream(streamCandidate);
       const canUseTizenP2p = TizenStreamingServerResolver.canResolveStream(streamCandidate);
-      const canUseP2p = canUseEngineFs || canUseTizenP2p;
+      const canUseP2p = Boolean(TorrentSettingsStore.get().p2pEnabled) && (canUseEngineFs || canUseTizenP2p);
       let fallbackError = "";
 
       if (DirectDebridResolver.canResolveStream(streamCandidate, resolveContext)) {
@@ -6516,6 +7251,14 @@ export const PlayerScreen = {
       }
 
       if (!targetUrl) {
+        const startupMessage = fallbackError
+          || (canUseP2p
+            ? t("player_error_failed_start_torrent", [t("player_error_playback_fallback", {}, "Playback error")], "Failed to start torrent: %1$s")
+            : t("player_error_playback_fallback", {}, "Playback error"));
+        if (!this.hasPresentedPlaybackFrame) {
+          this.showStartupError(startupMessage);
+          return;
+        }
         this.sourcesError = canUseP2p
           ? t("stream.p2p.failed", {}, "Could not start this torrent stream.")
           : (fallbackError || t("stream.debrid.unavailable", {}, "This Debrid source needs a configured Debrid account."));
@@ -6565,45 +7308,27 @@ export const PlayerScreen = {
     }
   },
 
-  findStartupPlaybackFallbackCandidate() {
-    const candidates = Array.isArray(this.streamCandidates) ? this.streamCandidates : [];
-    if (candidates.length <= 1) {
-      return null;
-    }
-
-    const failedUrls = this.failedPlaybackUrls || new Set();
-    const failedIds = this.failedPlaybackStreamIds || new Set();
-    const startIndex = Number.isFinite(Number(this.currentStreamIndex))
-      ? Number(this.currentStreamIndex)
-      : 0;
-
-    for (let offset = 1; offset <= candidates.length; offset += 1) {
-      const candidate = candidates[(startIndex + offset) % candidates.length];
-      if (!candidate) {
-        continue;
-      }
-      const candidateId = String(candidate.id || "").trim();
-      const candidateUrl = String(candidate.url || candidate.externalUrl || "").trim();
-      if ((candidateId && failedIds.has(candidateId)) || (candidateUrl && failedUrls.has(candidateUrl))) {
-        continue;
-      }
-      if (candidateUrl || DirectDebridResolver.canResolveStream(candidate, {
-        season: this.params?.season == null ? null : Number(this.params.season),
-        episode: this.params?.episode == null ? null : Number(this.params.episode)
-      }) || WebOsEngineFsResolver.canResolveStream(candidate) || TizenStreamingServerResolver.canResolveStream(candidate)) {
-        return candidate;
-      }
-    }
-    return null;
-  },
-
-  mediaErrorMessage(errorCode = 0) {
+  mediaErrorMessage(errorCode = 0, detail = "", streamCandidate = this.getCurrentStreamCandidate()) {
     const code = Number(errorCode || 0);
     if (code === 1) return "Playback aborted";
     if (code === 2) return "Network error";
-    if (code === 3) return "Decode error";
-    if (code === 4) return "Source not supported on this TV";
-    return "Playback error";
+    if (code === 3) return t("player_error_decoder", {}, "Decoder error");
+    if (code === 4) {
+      if (this.isDebridPlaybackCandidate(streamCandidate)) {
+        return t("player_error_stream_load_failed", {}, "Playback failed to load");
+      }
+      const text = String(detail || "").toLowerCase();
+      if (
+        text.includes("no supported source")
+        || text.includes("no supported sources")
+        || text.includes("not supported")
+        || text.includes("unsupported")
+      ) {
+        return t("player_error_source_not_supported", {}, "Source not supported on this TV");
+      }
+      return t("player_error_playback_fallback", {}, "Playback error");
+    }
+    return t("player_error_playback_fallback", {}, "Playback error");
   },
 
   attemptSilentAudioRecovery(reason = "silent-audio") {
@@ -6619,9 +7344,20 @@ export const PlayerScreen = {
   },
 
   markPlaybackProgress() {
+    if (typeof PlayerController.recordProgressSnapshot === "function") {
+      PlayerController.recordProgressSnapshot(
+        Math.floor(this.getPlaybackCurrentSeconds() * 1000),
+        Math.floor(this.getPlaybackDurationSeconds() * 1000),
+        typeof PlayerController.createProgressContext === "function"
+          ? PlayerController.createProgressContext()
+          : null
+      );
+    }
+    this.bufferingSpinnerBaselineSeconds = this.getPlaybackCurrentSeconds();
     this.lastPlaybackProgressAt = Date.now();
     this.engineFsStallExtensions = 0;
     this.lastEngineFsStallStats = null;
+    this.scheduleBufferingSpinnerRefresh();
   },
 
   getCurrentEngineFsStatsUrl() {
@@ -6691,19 +7427,35 @@ export const PlayerScreen = {
       }
       return fallback;
     };
+    const readOptionalNumber = (keys = []) => {
+      for (const key of keys) {
+        if (stats[key] == null) {
+          continue;
+        }
+        const parsed = Number(stats[key]);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+      return null;
+    };
     const progress = readNumber(["streamProgress", "progress"], -1);
     const downloaded = readNumber(["downloaded", "downloadedBytes"], -1);
     const downloadSpeed = readNumber(["downloadSpeed", "speed"], 0);
+    const uploadSpeed = readNumber(["uploadSpeed"], 0);
     const peers = readNumber(["peerCount", "peers"], 0);
     const unique = readNumber(["uniquePeerCount", "unique"], 0);
     const connectionTries = readNumber(["connectionTries", "tries"], 0);
+    const seeds = readOptionalNumber(["seedCount", "seeds", "seeders"]);
     return {
       progress,
       downloaded,
       downloadSpeed,
+      uploadSpeed,
       peers,
       unique,
       connectionTries,
+      seeds,
       peerSearchRunning: Boolean(stats.peerSearchRunning ?? stats.peerSearch),
       streamName: String(stats.streamName || "")
     };
@@ -6847,17 +7599,19 @@ export const PlayerScreen = {
       const readyState = typeof PlayerController.getPlaybackReadyState === "function"
         ? Number(PlayerController.getPlaybackReadyState() || 0)
         : Number(PlayerController.video?.readyState || 0);
-      if (startup && this.currentEngineFsStream) {
-        if (this.isEngineFsStartupReady()) {
-          this.hasPresentedPlaybackFrame = true;
+      if (startup) {
+        if (this.markPlaybackPresentedAfterAdvance()) {
           this.loadingVisible = false;
-          this.releaseStartupAudioGate();
           this.updateLoadingVisibility();
           this.updateUiTick();
           return;
         }
+        if (readyState >= 3 || (this.currentEngineFsStream && this.isEngineFsStartupReady())) {
+          this.schedulePlaybackStallGuard({ timeoutMs: 1000 });
+          return;
+        }
       }
-      if (readyState >= 3 && !(startup && this.currentEngineFsStream)) {
+      if (readyState >= 3 && !startup) {
         this.loadingVisible = false;
         this.updateLoadingVisibility();
         this.updateUiTick();
@@ -6896,13 +7650,32 @@ export const PlayerScreen = {
       }
 
       this.releaseStartupAudioGate({ resume: false });
+      if (startup) {
+        this.markPlaybackSourceFailed(this.activePlaybackUrl);
+        const mediaErrorCode = Number(PlayerController.getLastPlaybackErrorCode?.() || 0);
+        const sourceCandidate = this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
+        const startupErrorMessage = this.getStartupErrorMessage(mediaErrorCode, "", sourceCandidate);
+        this.showStartupError(startupErrorMessage, { mediaErrorCode });
+        if (this.currentEngineFsStream) {
+          logEngineFsDebug("EngineFS playback stalled during startup; keeping torrent alive until player exit or source change", {
+            reason: "playback-stall",
+            infoHash: this.currentEngineFsStream.infoHash,
+            fileIdx: this.currentEngineFsStream.fileIdx
+          });
+        }
+        return;
+      }
+
       this.loadingVisible = false;
       this.paused = true;
       this.dismissPauseOverlay();
       this.updateLoadingVisibility();
       this.updateMediaSessionPlaybackState();
       this.setControlsVisible(true, { focus: false });
-      this.sourcesError = `${this.mediaErrorMessage(PlayerController.getLastPlaybackErrorCode?.() || 0)}. Choose another source manually.`;
+      {
+        const sourceCandidate = this.getStreamCandidateByUrl(this.activePlaybackUrl) || this.getCurrentStreamCandidate();
+        this.sourcesError = `${this.mediaErrorMessage(PlayerController.getLastPlaybackErrorCode?.() || 0, "", sourceCandidate)}. Choose another source manually.`;
+      }
       if (this.currentEngineFsStream) {
         logEngineFsDebug("EngineFS playback stalled; keeping torrent alive until player exit or source change", {
           reason: "playback-stall",
@@ -11014,6 +11787,15 @@ export const PlayerScreen = {
     }
     this.syncPointerFocus(target);
 
+    const errorAction = target.closest?.("[data-player-error-action]");
+    if (errorAction && this.isStartupErrorVisible()) {
+      if (String(errorAction.dataset.playerErrorAction || "") === "back") {
+        this.navigateBackToStreamScreen();
+        return true;
+      }
+      return false;
+    }
+
     if (target.closest?.("[data-player-pointer-action='skipIntro']")) {
       return this.skipActiveInterval();
     }
@@ -11104,6 +11886,14 @@ export const PlayerScreen = {
   },
 
   consumeBackRequest() {
+    if (this.isStartupErrorVisible()) {
+      if (this.navigateBackToStreamScreen()) {
+        return true;
+      }
+      Router.back();
+      return true;
+    }
+
     if (this.pauseOverlayVisible) {
       this.dismissPauseOverlay({ revealControls: true, focus: false });
       if (this.paused) {
@@ -11160,6 +11950,16 @@ export const PlayerScreen = {
 
   async onKeyDown(event) {
     const keyCode = Number(event?.keyCode || 0);
+    if (this.isStartupErrorVisible()) {
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      if (isBackEvent(event) || keyCode === 13 || keyCode === 23 || keyCode === 66) {
+        if (!this.navigateBackToStreamScreen()) {
+          Router.back();
+        }
+      }
+      return;
+    }
     if (this.nextEpisodeBackExitArmed) {
       this.nextEpisodeBackExitArmed = false;
     }
@@ -11606,6 +12406,7 @@ export const PlayerScreen = {
       this.releaseImageProxyReadyListener = null;
     }
     this.clearTrackDiscoveryTimer();
+    this.stopLoadingLogoFillAnimation();
     this.clearPlaybackStallGuard();
     if (this.engineFsStartupRetryTimer) {
       clearTimeout(this.engineFsStartupRetryTimer);

@@ -5,6 +5,7 @@ import { DirectDebridResolver } from "../../../core/debrid/directDebridResolver.
 import { DirectDebridStreamPreparer } from "../../../core/debrid/directDebridStreamPreparer.js";
 import { WebOsEngineFsResolver } from "../../../core/p2p/webosEngineFsResolver.js";
 import { TizenStreamingServerResolver } from "../../../core/p2p/tizenStreamingServerResolver.js";
+import { TorrentSettingsStore } from "../../../data/local/torrentSettingsStore.js";
 import { DebridSettingsStore } from "../../../data/local/debridSettingsStore.js";
 import { StreamBadgeSettingsStore } from "../../../data/local/streamBadgeSettingsStore.js";
 import { LocalStore } from "../../../core/storage/localStore.js";
@@ -337,6 +338,108 @@ function normalizeAddonLogoUrl(value = "") {
   return normalizeImageUrl(value);
 }
 
+async function ensureAddonLogoImageProxyReady() {
+  if (!Environment.isWebOS()) {
+    return false;
+  }
+  try {
+    return await ensureWebOsImageProxyReady();
+  } catch (_) {
+    return false;
+  }
+}
+
+async function warmAddonLogoPreview(url = "") {
+  const normalized = normalizeAddonLogoUrl(url);
+  if (!normalized || failedAddonLogoUrls.has(normalized)) {
+    return false;
+  }
+  hydrateAddonLogoCache();
+  const cached = addonLogoCache.get(normalized);
+  if (cached?.status === "ready" || cached?.status === "direct") {
+    return true;
+  }
+  if (cached?.status === "loading") {
+    return cached.promise || Promise.resolve(false);
+  }
+
+  const loadingEntry = { status: "loading", updatedAt: Date.now(), promise: null };
+  addonLogoCache.set(normalized, loadingEntry);
+  const promise = new Promise((resolve) => {
+    const settle = (ok) => resolve(ok);
+    const fail = () => {
+      failedAddonLogoUrls.add(normalized);
+      addonLogoCache.set(normalized, { status: "failed", updatedAt: Date.now() });
+      settle(false);
+    };
+    const finishDirect = () => {
+      addonLogoCache.set(normalized, {
+        status: "direct",
+        displayUrl: normalized,
+        updatedAt: Date.now()
+      });
+      settle(true);
+    };
+    const loadDirect = () => {
+      const directImage = new Image();
+      directImage.decoding = "async";
+      try {
+        directImage.referrerPolicy = "no-referrer";
+      } catch (_) {
+      }
+      directImage.onload = () => {
+        (async () => {
+          await awaitImageDecoded(directImage);
+          finishDirect();
+        })();
+      };
+      directImage.onerror = fail;
+      directImage.src = normalized;
+    };
+    const finish = (image = null) => {
+      if (image && typeof imageToDataUrl === "function") {
+        (async () => {
+          try {
+            if (!(await awaitImageDecoded(image))) {
+              throw new Error("decode-failed");
+            }
+            const dataUrl = imageToDataUrl(image);
+            if (dataUrl) {
+              addonLogoCache.set(normalized, {
+                status: "ready",
+                displayUrl: dataUrl,
+                updatedAt: Date.now()
+              });
+              scheduleAddonLogoCachePersist();
+              settle(true);
+              return;
+            }
+          } catch (_) {
+          }
+          finishDirect();
+        })();
+        return;
+      }
+      finishDirect();
+    };
+    const image = new Image();
+    image.decoding = "async";
+    try {
+      image.crossOrigin = "anonymous";
+    } catch (_) {
+    }
+    try {
+      image.referrerPolicy = "no-referrer";
+    } catch (_) {
+    }
+    image.onload = () => finish(image);
+    image.onerror = loadDirect;
+    image.src = normalized;
+  });
+  loadingEntry.promise = promise;
+  return promise;
+}
+
 export function resetAddonLogoCache() {
   failedAddonLogoUrls.clear();
   addonLogoCache.clear();
@@ -375,6 +478,21 @@ async function preloadMatchedStreamBadgeImages(streams = [], settings = StreamBa
       });
   });
   await Promise.all(Array.from(urls).map((url) => requestAddonLogo(url)));
+}
+
+async function preloadAddonLogoImages(streams = [], lookup = {}) {
+  const urls = new Set();
+  (streams || []).forEach((stream) => {
+    const url = normalizeAddonLogoUrl(
+      stream?.addonLogo
+      || stream?.raw?.addonLogo
+      || resolveAddonLogo(stream?.addonName, lookup)
+    );
+    if (url) {
+      urls.add(url);
+    }
+  });
+  await Promise.all(Array.from(urls).map((url) => warmAddonLogoPreview(url)));
 }
 
 function hydrateAddonLogoCache() {
@@ -446,6 +564,18 @@ function imageToDataUrl(image) {
   return canvas.toDataURL("image/png");
 }
 
+async function awaitImageDecoded(image) {
+  if (!image || typeof image.decode !== "function") {
+    return true;
+  }
+  try {
+    await image.decode();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function requestAddonLogo(url = "", onSettled = null) {
   const normalized = normalizeAddonLogoUrl(url);
   if (!normalized || failedAddonLogoUrls.has(normalized)) {
@@ -502,7 +632,12 @@ function requestAddonLogo(url = "", onSettled = null) {
       } catch (_) {
         // Some TV browsers expose referrerPolicy as read-only.
       }
-      directImage.onload = finishDirect;
+      directImage.onload = () => {
+        (async () => {
+          await awaitImageDecoded(directImage);
+          finishDirect();
+        })();
+      };
       directImage.onerror = fail;
       directImage.src = normalized;
     };
@@ -515,18 +650,23 @@ function requestAddonLogo(url = "", onSettled = null) {
       // Some TV browsers expose referrerPolicy as read-only.
     }
     image.onload = () => {
-      try {
-        const dataUrl = imageToDataUrl(image);
-        addonLogoCache.set(normalized, {
-          status: "ready",
-          displayUrl: dataUrl,
-          updatedAt: Date.now()
-        });
-        scheduleAddonLogoCachePersist();
-        settle(true);
-      } catch (_) {
-        loadDirect();
-      }
+      (async () => {
+        try {
+          if (!(await awaitImageDecoded(image))) {
+            throw new Error("decode-failed");
+          }
+          const dataUrl = imageToDataUrl(image);
+          addonLogoCache.set(normalized, {
+            status: "ready",
+            displayUrl: dataUrl,
+            updatedAt: Date.now()
+          });
+          scheduleAddonLogoCachePersist();
+          settle(true);
+        } catch (_) {
+          loadDirect();
+        }
+      })();
     };
     image.onerror = loadDirect;
     image.src = normalized;
@@ -551,6 +691,23 @@ function normalizeAddonLookupKey(value = "") {
   return String(value || "").trim().toLowerCase();
 }
 
+function rememberAddonLogoLookup(lookup = {}, addonName = "", addonLogo = "") {
+  const key = normalizeAddonLookupKey(addonName);
+  const rawLogo = String(addonLogo || "").trim();
+  const logo = normalizeAddonLogoUrl(rawLogo) || rawLogo;
+  if (key && logo) {
+    lookup[key] = logo;
+  }
+}
+
+function normalizeAddonLogoLookup(lookup = {}) {
+  const normalized = {};
+  Object.entries(lookup || {}).forEach(([key, value]) => {
+    rememberAddonLogoLookup(normalized, key, value);
+  });
+  return normalized;
+}
+
 function buildAddonLogoLookup(addons = []) {
   const lookup = {};
   (addons || []).forEach((addon) => {
@@ -564,10 +721,7 @@ function buildAddonLogoLookup(addons = []) {
       addon?.id,
       addon?.baseUrl
     ].forEach((key) => {
-      const normalized = normalizeAddonLookupKey(key);
-      if (normalized && !lookup[normalized]) {
-        lookup[normalized] = logo;
-      }
+      rememberAddonLogoLookup(lookup, key, lookup[normalizeAddonLookupKey(key)] || logo);
     });
   });
   return lookup;
@@ -1044,6 +1198,41 @@ export const StreamScreen = {
     });
   },
 
+  areAddonLogosReady(streams = []) {
+    return (streams || []).every((stream) => {
+      const addonLogoUrl = normalizeAddonLogoUrl(stream?.addonLogo)
+        || resolveAddonLogo(stream?.addonName, this.addonLogoLookup);
+      if (!addonLogoUrl || failedAddonLogoUrls.has(addonLogoUrl)) {
+        return true;
+      }
+      return Boolean(getCachedAddonLogoDisplayUrl(addonLogoUrl));
+    });
+  },
+
+  requestAddonLogoPrerender(streams = []) {
+    const urls = Array.from(new Set((streams || [])
+      .map((stream) => normalizeAddonLogoUrl(stream?.addonLogo) || resolveAddonLogo(stream?.addonName, this.addonLogoLookup))
+      .filter((url) => url && !failedAddonLogoUrls.has(url) && !getCachedAddonLogoDisplayUrl(url))));
+    if (!urls.length) {
+      return;
+    }
+    const key = urls.sort().join("|");
+    if (this.pendingAddonLogoPrerenderKey === key) {
+      return;
+    }
+    const token = this.loadToken || 0;
+    this.pendingAddonLogoPrerenderKey = key;
+    void preloadAddonLogoImages(streams, this.addonLogoLookup)
+      .finally(() => {
+        if (this.pendingAddonLogoPrerenderKey === key) {
+          this.pendingAddonLogoPrerenderKey = "";
+        }
+        if (this.container && Router.getCurrent() === "stream" && token === this.loadToken) {
+          this.requestRender();
+        }
+      });
+  },
+
   scheduleDebridPreparation() {
     const token = this.loadToken || 0;
     if (this.debridPreparationScheduled) {
@@ -1142,6 +1331,7 @@ export const StreamScreen = {
     ScreenUtils.show(this.container);
     this.params = params || {};
     this.loadToken = (this.loadToken || 0) + 1;
+    const token = this.loadToken;
     this.focusState = { zone: "filter", index: 0 };
     this.listScrollTop = 0;
     this.error = "";
@@ -1174,9 +1364,21 @@ export const StreamScreen = {
       this.focusState = restored.focusState ? { ...restored.focusState } : { zone: "filter", index: 0 };
       this.sourceChips = Array.isArray(restored.sourceChips) ? restored.sourceChips.map((chip) => ({ ...chip })) : [];
       this.addonLogoLookup = restored.addonLogoLookup && typeof restored.addonLogoLookup === "object"
-        ? { ...restored.addonLogoLookup }
+        ? normalizeAddonLogoLookup(restored.addonLogoLookup)
         : {};
       this.listScrollTop = Number(restored.listScrollTop || 0);
+    }
+
+    if (restored && this.streams.length) {
+      await ensureAddonLogoImageProxyReady();
+      if (token !== this.loadToken || Router.getCurrent() !== "stream") {
+        return;
+      }
+      this.streams = this.applyAddonLogos(this.streams);
+      await preloadAddonLogoImages(this.streams, this.addonLogoLookup);
+      if (token !== this.loadToken || Router.getCurrent() !== "stream") {
+        return;
+      }
     }
 
     this.render();
@@ -1202,10 +1404,15 @@ export const StreamScreen = {
     this.focusState = { zone: "filter", index: 0 };
     this.listScrollTop = 0;
     this.addonLogoLookup = {};
-    this.hasRenderedStreamRouteShell = false;
 
     this.sourceChips = [];
-    this.requestRender();
+    if (!this.hasRenderedStreamRouteShell) {
+      this.requestRender();
+    }
+    await ensureAddonLogoImageProxyReady();
+    if (token !== this.loadToken) {
+      return;
+    }
     const pendingChunkTasks = new Set();
     const badgeSettings = StreamBadgeSettingsStore.snapshot();
 
@@ -1227,7 +1434,7 @@ export const StreamScreen = {
       } else {
         this.sourceChips.push(nextChip);
       }
-      this.addonLogoLookup[name] = nextChip.logo;
+      rememberAddonLogoLookup(this.addonLogoLookup, name, addon.logo || nextChip.logo);
       this.sourceChips = this.sourceChips
         .slice()
         .sort((left, right) => Number(left.orderIndex || 0) - Number(right.orderIndex || 0));
@@ -1287,7 +1494,10 @@ export const StreamScreen = {
       if (!chunkStreams.length) {
         return;
       }
-      await preloadMatchedStreamBadgeImages(chunkStreams, badgeSettings);
+      await Promise.all([
+        preloadMatchedStreamBadgeImages(chunkStreams, badgeSettings),
+        preloadAddonLogoImages(chunkStreams, this.addonLogoLookup)
+      ]);
       if (token !== this.loadToken) {
         return;
       }
@@ -1352,7 +1562,10 @@ export const StreamScreen = {
         return key && !existingKeys.has(key);
       });
       if (missingStreams.length) {
-        await preloadMatchedStreamBadgeImages(missingStreams, badgeSettings);
+        await Promise.all([
+          preloadMatchedStreamBadgeImages(missingStreams, badgeSettings),
+          preloadAddonLogoImages(missingStreams, this.addonLogoLookup)
+        ]);
         if (token !== this.loadToken) {
           return;
         }
@@ -1360,6 +1573,9 @@ export const StreamScreen = {
       }
       this.scheduleDebridPreparation();
       markSuccessfulSources(this.streams.map((stream) => stream.addonName));
+      if (this.streams.length) {
+        await preloadAddonLogoImages(this.streams, this.addonLogoLookup);
+      }
       this.sourceChips = this.sourceChips.map((chip) => (
         chip.status === "loading" ? { ...chip, status: "error" } : chip
       ));
@@ -1621,13 +1837,10 @@ export const StreamScreen = {
       renderMetaItem("size", formatBytes(stream.behaviorHints?.videoSize)),
       renderMetaItem("source", extractIndexerName(stream))
     ].filter(Boolean).join("");
-    const isResolving = this.resolvingStreamId === stream.id;
-    const resolvingLabel = this.resolvingStreamMode === "p2p"
-      ? t("stream.p2p.resolving", {}, "Resolving P2P stream")
-      : t("stream.debrid.resolving", {}, "Resolving Debrid stream");
-    const addonLogoLoading = Environment.isWebOS() ? "eager" : "lazy";
+    const addonLogoLoading = (Environment.isWebOS() || Environment.isTizen()) ? "eager" : "lazy";
+    const addonLogoDecoding = (Environment.isWebOS() || Environment.isTizen()) ? "sync" : "async";
     const addonBadge = displayAddonLogoUrl
-      ? `<img src="${escapeHtml(displayAddonLogoUrl)}" alt="${escapeHtml(stream.addonName || "Addon")}" data-addon-logo="${escapeHtml(addonLogoUrl)}" decoding="async" loading="${addonLogoLoading}" referrerpolicy="no-referrer" /><span hidden>${addonBadgeLabel}</span>`
+      ? `<img src="${escapeHtml(displayAddonLogoUrl)}" alt="${escapeHtml(stream.addonName || "Addon")}" data-addon-logo="${escapeHtml(addonLogoUrl)}" decoding="${addonLogoDecoding}" loading="${addonLogoLoading}" referrerpolicy="no-referrer" /><span hidden>${addonBadgeLabel}</span>`
       : `<span>${addonBadgeLabel}</span>`;
 
     return `
@@ -1645,7 +1858,6 @@ export const StreamScreen = {
         <div class="stream-route-card-side">
           <div class="stream-route-addon-badge">${addonBadge}</div>
           <div class="stream-route-addon-name">${escapeHtml(stream.addonName || "Addon")}</div>
-          ${isResolving ? `<div class="stream-route-addon-name">${escapeHtml(resolvingLabel)}</div>` : ""}
         </div>
       </article>
     `;
@@ -1682,13 +1894,17 @@ export const StreamScreen = {
     const hasAnyStreams = this.streams.length > 0;
     const streamBadgesEnabled = DebridSettingsStore.get().streamBadgesEnabled !== false;
     const badgeSettings = StreamBadgeSettingsStore.snapshot();
+    const addonLogosReady = !filtered.length || this.areAddonLogosReady(filtered);
 
     let body = "";
-    if (filtered.length) {
+    if (filtered.length && addonLogosReady) {
       body = filtered.map((stream, index) => this.renderStreamCard(stream, index, streamBadgesEnabled, badgeSettings)).join("");
       if (hasPendingForFilter) {
         body += this.renderLoadingCards(1);
       }
+    } else if (filtered.length) {
+      this.requestAddonLogoPrerender(filtered);
+      body = this.renderLoadingCards(Math.min(3, filtered.length));
     } else if ((this.loading && !hasAnyStreams) || hasPendingForFilter) {
       body = this.renderLoadingCards();
     } else if (this.error) {
@@ -1763,111 +1979,15 @@ export const StreamScreen = {
   },
 
   async playStream(streamId) {
-    const playResolveToken = (Number(this.playResolveToken || 0) + 1);
-    this.playResolveToken = playResolveToken;
-    const isCurrentPlayRequest = () => (
-      this.playResolveToken === playResolveToken
-      && Router.getCurrent?.() === "stream"
-    );
     const filtered = this.getFilteredStreams();
     const selected = filtered.find((stream) => stream.id === streamId) || filtered[0];
     if (!selected) {
       return;
     }
-    let targetUrl = selected.url || selected.externalUrl || "";
-    if (!targetUrl) {
-      const resolveContext = {
-        season: this.params?.season == null ? null : Number(this.params.season),
-        episode: this.params?.episode == null ? null : Number(this.params.episode)
-      };
-      const canUseEngineFs = WebOsEngineFsResolver.canResolveStream(selected);
-      const canUseTizenP2p = TizenStreamingServerResolver.canResolveStream(selected);
-      const canUseP2p = canUseEngineFs || canUseTizenP2p;
-      let fallbackError = "";
-
-      if (DirectDebridResolver.canResolveStream(selected, resolveContext)) {
-        this.resolvingStreamId = selected.id;
-        this.resolvingStreamMode = "debrid";
-        this.requestRender();
-        const result = await DirectDebridResolver.resolve(selected, resolveContext);
-        if (!isCurrentPlayRequest()) {
-          return;
-        }
-        this.resolvingStreamId = null;
-        this.resolvingStreamMode = "";
-        if (result.status === "success" && result.stream?.url) {
-          selected.url = result.stream.url;
-          selected.externalUrl = null;
-          selected.behaviorHints = result.stream.behaviorHints || selected.behaviorHints;
-          selected.raw = result.stream.raw || selected.raw;
-          targetUrl = selected.url || selected.externalUrl || "";
-        } else {
-          this.requestRender();
-          const messageKey = result.status === "not_cached"
-            ? "stream.debrid.notCached"
-            : result.status === "stale"
-                ? "stream.debrid.stale"
-                : "stream.debrid.failed";
-          const fallback = result.status === "not_cached"
-            ? "Not cached on this service."
-            : result.status === "stale"
-                ? "This Debrid result expired. Refreshing streams."
-                : "Could not resolve this Debrid stream.";
-          fallbackError = t(messageKey, {}, fallback);
-        }
-      }
-
-      if (!targetUrl && canUseP2p) {
-        this.resolvingStreamId = selected.id;
-        this.resolvingStreamMode = "p2p";
-        this.requestRender();
-        const result = canUseEngineFs
-          ? await WebOsEngineFsResolver.resolve(selected, resolveContext)
-          : await TizenStreamingServerResolver.resolve(selected, resolveContext);
-        if (!isCurrentPlayRequest()) {
-          return;
-        }
-        this.resolvingStreamId = null;
-        this.resolvingStreamMode = "";
-        if (result.status === "success" && result.stream?.url) {
-          selected.url = result.stream.url;
-          selected.externalUrl = null;
-          selected.infoHash = result.stream.infoHash || selected.infoHash;
-          selected.fileIdx = result.stream.fileIdx ?? selected.fileIdx;
-          selected.engineFs = result.stream.engineFs || selected.engineFs || null;
-          selected.tizenP2p = result.stream.tizenP2p || selected.tizenP2p || null;
-          selected.mimeType = result.stream.mimeType || selected.mimeType || null;
-          selected.sourceType = result.stream.sourceType || selected.sourceType || "";
-          selected.behaviorHints = result.stream.behaviorHints || selected.behaviorHints;
-          selected.raw = result.stream.raw || selected.raw;
-          targetUrl = selected.url || selected.externalUrl || "";
-        } else {
-          console.warn("StreamScreen: P2P resolve failed", {
-            status: result.status,
-            detail: result.detail || "",
-            infoHash: selected.infoHash || selected.raw?.infoHash || selected.clientResolve?.infoHash || selected.raw?.clientResolve?.infoHash || "",
-            fileIdx: selected.fileIdx ?? selected.raw?.fileIdx ?? null
-          });
-          this.requestRender();
-        }
-      }
-
-      if (!targetUrl) {
-        window.alert?.(canUseP2p
-          ? t("stream.p2p.failed", {}, "Could not start this torrent stream.")
-          : (fallbackError || t("stream.debrid.unavailable", {}, "This Debrid source needs a configured Debrid account.")));
-        return;
-      }
-      this.streams = this.streams.map((stream) => stream.id === selected.id ? { ...stream, ...selected } : stream);
-      this.requestRender();
-    }
-    if (!isCurrentPlayRequest()) {
-      return;
-    }
     const playerStreamCandidates = this.getFilteredStreams();
     const itemType = normalizeType(this.params?.itemType);
     Router.navigate("player", {
-      streamUrl: targetUrl,
+      streamUrl: selected.url || selected.externalUrl || null,
       itemId: this.params?.itemId || null,
       itemType: itemType || "movie",
       imdbId: this.params?.imdbId || null,
@@ -1888,6 +2008,7 @@ export const StreamScreen = {
       episode: this.params?.episode == null ? null : Number(this.params.episode),
       episodes: Array.isArray(this.params?.episodes) ? this.params.episodes : [],
       streamCandidates: playerStreamCandidates,
+      preferredStreamId: selected.id,
       returnToStreamOnBack: true,
       fromDetailRoute: Boolean(this.params?.fromDetailRoute),
       nextEpisodeVideoId: this.params?.nextEpisodeVideoId || null,

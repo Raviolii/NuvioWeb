@@ -175,6 +175,10 @@ function mapProgressRow(row = {}) {
   const positionMs = hasPositionMs ? toMilliseconds(positionMsRaw) : normalizeAmbiguousRemoteTime(positionMsRaw);
   const durationMs = hasDurationMs ? toMilliseconds(durationMsRaw) : normalizeAmbiguousRemoteTime(durationMsRaw);
   const normalizedTimes = normalizeInflatedProgressTimes(positionMs, durationMs);
+  const normalizedProgressPercent = Number.isFinite(progressPercent) ? Math.max(0, Math.min(100, progressPercent)) : null;
+  const completedProgressPercent = source === "trakt_history" && normalizedProgressPercent != null && normalizedProgressPercent < 100
+    ? 100
+    : normalizedProgressPercent;
   return {
     contentId,
     contentType,
@@ -185,7 +189,7 @@ function mapProgressRow(row = {}) {
     episode: Number.isFinite(episodeNum) && episodeNum > 0 ? episodeNum : null,
     positionMs: normalizedTimes.positionMs,
     durationMs: normalizedTimes.durationMs,
-    progressPercent: Number.isFinite(progressPercent) ? Math.max(0, Math.min(100, progressPercent)) : null,
+    progressPercent: completedProgressPercent,
     source: source || "local",
     updatedAt: Number.isFinite(updatedAt) ? updatedAt : Date.now()
   };

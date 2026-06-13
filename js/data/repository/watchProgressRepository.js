@@ -177,7 +177,9 @@ function toProgressItemFromTraktHistory(historyItem) {
     updatedAt: watchedAtMs,
     positionMs: 0,
     durationMs: 0,
-    progressPercent: 80,
+    // Trakt history represents completed items, not partial progress.
+    // Keep it out of Continue Watching while still letting it seed Next Up.
+    progressPercent: 100,
     profileId: activeProfileId(),
     seasonNumber: isEpisode ? historyItem.seasonNumber : undefined,
     episodeNumber: isEpisode ? historyItem.episodeNumber : undefined,
