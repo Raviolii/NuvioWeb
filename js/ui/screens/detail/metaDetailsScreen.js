@@ -677,10 +677,14 @@ function shouldUseDirectYoutubeEmbedOnTv() {
 }
 
 function getYoutubeProxyBaseUrl() {
+  const configured = String(YOUTUBE_PROXY_URL || "").trim();
   if (Platform.isWebOS() || Platform.isTizen()) {
-    return LOCAL_YOUTUBE_PROXY_URL;
+    // The local proxy is served from a file:// origin, which YouTube rejects
+    // (embed error 153). Prefer a configured https-hosted proxy when available
+    // so the embedding origin is valid; otherwise fall back to the local file.
+    return /^https?:\/\//i.test(configured) ? configured : LOCAL_YOUTUBE_PROXY_URL;
   }
-  return String(YOUTUBE_PROXY_URL || LOCAL_YOUTUBE_PROXY_URL).trim();
+  return configured || LOCAL_YOUTUBE_PROXY_URL;
 }
 
 function resolveTrailerPostMessageTargetOrigin(src = "") {
@@ -745,7 +749,7 @@ function buildYoutubeEmbedUrl(ytId = "", { muted = true } = {}) {
       const proxyUrl = new URL(proxyBase, globalThis?.location?.href || "https://example.com/");
       proxyUrl.searchParams.set("v", cleanId);
       proxyUrl.searchParams.set("autoplay", "1");
-      proxyUrl.searchParams.set("muted", "1");
+      proxyUrl.searchParams.set("muted", muted ? "1" : "0");
       proxyUrl.searchParams.set("controls", "0");
       proxyUrl.searchParams.set("loop", "1");
       proxyUrl.searchParams.set("playlist", cleanId);
