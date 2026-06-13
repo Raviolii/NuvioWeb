@@ -5337,7 +5337,20 @@ export const HomeScreen = {
     if (!state || Router.getCurrent() !== "home" || this.layoutMode !== "modern") {
       return;
     }
-    this.applyModernCameraFollowTargets(state.horizontal, state.vertical);
+    if (state.deferred) {
+      const horizontal = this.getModernTrackAlignedScrollTarget(state.target, state.horizontalAdjustment);
+      const vertical = this.getModernMainAlignedScrollTarget(state.target, state.direction, state.current, state.verticalAdjustment);
+      const hasHorizontal = Boolean(horizontal?.container && Math.abs(Number(horizontal.container.scrollLeft || 0) - Number(horizontal.value || 0)) > 1);
+      const hasVertical = Boolean(vertical?.container && Math.abs(Number(vertical.container.scrollTop || 0) - Number(vertical.value || 0)) > 1);
+      this.modernCameraFollowLastHorizontalContainer = horizontal?.container || this.modernCameraFollowLastHorizontalContainer;
+      this.modernCameraFollowLastVerticalContainer = vertical?.container || this.modernCameraFollowLastVerticalContainer;
+      this.applyModernCameraFollowTargets(
+        hasHorizontal ? horizontal : null,
+        hasVertical ? vertical : null
+      );
+    } else {
+      this.applyModernCameraFollowTargets(state.horizontal, state.vertical);
+    }
   },
 
   scheduleModernCameraFollow(target, direction = null, current = null, layoutAdjustment = {}, inputMeta = {}) {
@@ -5349,25 +5362,21 @@ export const HomeScreen = {
     const shouldFollowVerticalHoldImmediately = isVerticalMove && Boolean(inputMeta?.repeat);
     const horizontalAdjustment = Number(layoutAdjustment?.horizontal || 0);
     const verticalAdjustment = Number(layoutAdjustment?.vertical || 0);
-    const horizontal = this.getModernTrackAlignedScrollTarget(target, horizontalAdjustment);
-    const vertical = this.getModernMainAlignedScrollTarget(target, direction, current, verticalAdjustment);
-    const hasHorizontal = Boolean(horizontal?.container && Math.abs(Number(horizontal.container.scrollLeft || 0) - Number(horizontal.value || 0)) > 1);
-    const hasVertical = Boolean(vertical?.container && Math.abs(Number(vertical.container.scrollTop || 0) - Number(vertical.value || 0)) > 1);
-
-    if (!hasHorizontal && !hasVertical) {
-      this.modernCameraFollowLastHorizontalContainer = horizontal?.container || this.modernCameraFollowLastHorizontalContainer;
-      this.modernCameraFollowLastVerticalContainer = vertical?.container || this.modernCameraFollowLastVerticalContainer;
-      return true;
-    }
 
     if (shouldFollowVerticalHoldImmediately) {
+      const horizontal = this.getModernTrackAlignedScrollTarget(target, horizontalAdjustment);
+      const vertical = this.getModernMainAlignedScrollTarget(target, direction, current, verticalAdjustment);
       this.applyModernCameraFollowTargets(horizontal, vertical);
       return true;
     }
 
     this.modernCameraFollowState = {
-      horizontal: hasHorizontal ? horizontal : null,
-      vertical: hasVertical ? vertical : null
+      deferred: true,
+      target,
+      direction,
+      current,
+      horizontalAdjustment,
+      verticalAdjustment
     };
     this.modernCameraFollowTimer = setTimeout(() => {
       this.flushModernCameraFollow();
@@ -5631,15 +5640,28 @@ export const HomeScreen = {
 
   ensureMainVerticalVisibility(target, direction = null, current = null, layoutAdjustment = 0) {
     if (this.layoutMode === "modern") {
-      const next = this.getModernMainAlignedScrollTarget(target, direction, current, layoutAdjustment);
-      if (!next?.container) {
-        return;
+      if (this._mainVertRaf) {
+        cancelAnimationFrame(this._mainVertRaf);
       }
-      const delta = Math.abs(Number(next.container.scrollTop || 0) - Number(next.value || 0));
-      if (delta <= 1) {
-        return;
-      }
-      this.animateSpringScroll(next.container, "y", next.value);
+      const _target = target;
+      const _direction = direction;
+      const _current = current;
+      const _adj = layoutAdjustment;
+      this._mainVertRaf = requestAnimationFrame(() => {
+        this._mainVertRaf = null;
+        if (!_target.isConnected) {
+          return;
+        }
+        const next = this.getModernMainAlignedScrollTarget(_target, _direction, _current, _adj);
+        if (!next?.container) {
+          return;
+        }
+        const delta = Math.abs(Number(next.container.scrollTop || 0) - Number(next.value || 0));
+        if (delta <= 1) {
+          return;
+        }
+        this.animateSpringScroll(next.container, "y", next.value);
+      });
       return;
     }
 
@@ -5671,14 +5693,25 @@ export const HomeScreen = {
 
   ensureTrackHorizontalVisibility(target, direction = null, layoutAdjustment = 0) {
     if (this.layoutMode === "modern") {
-      const next = this.getModernTrackAlignedScrollTarget(target, layoutAdjustment);
-      if (!next?.container) {
-        return;
+      if (this._trackHorizRaf) {
+        cancelAnimationFrame(this._trackHorizRaf);
       }
-      if (Math.abs(Number(next.container.scrollLeft || 0) - Number(next.value || 0)) <= 1) {
-        return;
-      }
-      this.animateSpringScroll(next.container, "x", next.value);
+      const _target = target;
+      const _adj = layoutAdjustment;
+      this._trackHorizRaf = requestAnimationFrame(() => {
+        this._trackHorizRaf = null;
+        if (!_target.isConnected) {
+          return;
+        }
+        const next = this.getModernTrackAlignedScrollTarget(_target, _adj);
+        if (!next?.container) {
+          return;
+        }
+        if (Math.abs(Number(next.container.scrollLeft || 0) - Number(next.value || 0)) <= 1) {
+          return;
+        }
+        this.animateSpringScroll(next.container, "x", next.value);
+      });
       return;
     }
 
@@ -6259,7 +6292,24 @@ export const HomeScreen = {
     const initialDescriptors = catalogDescriptors.slice(0, initialCatalogLoad);
     const deferredDescriptors = catalogDescriptors.slice(initialCatalogLoad);
 
-    const initialRows = await this.fetchCatalogRows(initialDescriptors, { allowLoading: true });
+    const progressiveInitialRows = new Map();
+    const initialRows = await this.fetchCatalogRows(initialDescriptors, {
+      allowLoading: true,
+      onRow: (row) => {
+        if (token !== this.homeLoadToken || Router.getCurrent() !== "home") {
+          return;
+        }
+        progressiveInitialRows.set(row.homeCatalogKey, row);
+        this.rows = this.sortAndFilterRows(Array.from(progressiveInitialRows.values()), this.collections);
+        this.heroCandidates = uniqueById(this.collectHeroCandidates(this.rows));
+        if (!this.heroItem) {
+          this.heroItem = this.pickInitialHero();
+        }
+        this.isInitialHomeLoading = false;
+        this.hasLoadedOnce = true;
+        this.requestBackgroundRender();
+      }
+    });
     if (token !== this.homeLoadToken) {
       return;
     }
@@ -6511,6 +6561,7 @@ export const HomeScreen = {
     const loadingCount = this.getLoadingRowItemCount();
     const batchSize = Math.max(0, Number(options?.batchSize || 0));
     const onBatch = typeof options?.onBatch === "function" ? options.onBatch : null;
+    const onRow = typeof options?.onRow === "function" ? options.onRow : null;
     const fetchedRows = [];
     const normalizedDescriptors = Array.isArray(descriptors) ? descriptors : [];
     if (HOME_PERF_DEBUG) {
@@ -6538,26 +6589,26 @@ export const HomeScreen = {
           supportsSkip: true
         }), timeoutMs, { status: "error", message: "timeout" });
         const rowKey = buildModernRowKey(catalog);
-        return {
+        const row = {
           ...catalog,
           result: result?.status === "success" ? result : (allowLoading ? { status: "loading" } : result),
           loadingItems: allowLoading && result?.status !== "success"
             ? buildCatalogLoadingItems(rowKey, loadingCount)
-            : null
-        };
-      }));
-      const mappedRows = rowResults
-        .filter((row) => row.result?.status === "success" || allowLoading)
-        .map((row) => ({
-          ...row,
-          homeCatalogKey: buildCatalogOrderKey(row.addonId, row.type, row.catalogId),
+            : null,
+          homeCatalogKey: buildCatalogOrderKey(catalog.addonId, catalog.type, catalog.catalogId),
           homeCatalogDisableKey: buildCatalogDisableKey(
-            row.addonBaseUrl,
-            row.type,
-            row.catalogId,
-            row.catalogName
+            catalog.addonBaseUrl,
+            catalog.type,
+            catalog.catalogId,
+            catalog.catalogName
           )
-        }));
+        };
+        if (onRow && (row.result?.status === "success" || allowLoading)) {
+          onRow(row);
+        }
+        return row;
+      }));
+      const mappedRows = rowResults.filter((row) => row.result?.status === "success" || allowLoading);
       fetchedRows.push(...mappedRows);
       if (onBatch && mappedRows.length) {
         onBatch(mappedRows);
