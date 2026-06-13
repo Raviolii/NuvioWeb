@@ -4536,6 +4536,7 @@ button:focus-visible {
   position: relative;
   z-index: 2;
   margin-bottom: 32px;
+  contain: layout;
 }
 
 .home-screen-shell.home-layout-modern .home-row {
@@ -4577,6 +4578,7 @@ button:focus-visible {
   overflow-x: auto;
   overflow-y: visible;
   scrollbar-width: none;
+  transform: translateZ(0);
 }
 
 .home-screen-shell .home-track::-webkit-scrollbar {
@@ -4592,7 +4594,7 @@ button:focus-visible {
   border: 2px solid transparent;
   background: transparent;
   overflow: visible;
-  transition: transform 160ms ease-out, border-color 160ms ease, box-shadow 160ms ease;
+  transition: transform 120ms ease-out, border-color 120ms ease;
 }
 
 .home-screen-shell .home-content-card.focused {
