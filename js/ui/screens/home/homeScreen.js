@@ -71,8 +71,10 @@ const HOME_MODERN_HERO_BACKDROP_CROSSFADE_MS = 400;
 const CW_META_TIMEOUT_MS = 1800;
 const CW_META_TIMEOUT_TV_MS = 4200;
 const CW_NEXT_UP_META_TIMEOUT_MS = 2200;
-const CW_META_RETRY_TIMEOUT_MS = 8000;
 const CW_ENRICHMENT_CACHE_KEY = "homeContinueWatchingEnrichmentCache";
+const CW_DISPLAY_SNAPSHOT_KEY = "homeContinueWatchingDisplaySnapshot";
+const CW_DISPLAY_SNAPSHOT_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const CW_DISPLAY_SNAPSHOT_MAX_SCOPES = 4;
 const HOME_RETURN_FOCUS_STATE_KEY = "homeReturnFocusState";
 const CW_ENRICHMENT_CACHE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const CW_NEXT_UP_NEW_SEASON_UNAIRED_WINDOW_DAYS = 7;
@@ -1430,6 +1432,36 @@ function saveContinueWatchingEnrichment(item = {}) {
     .sort(([, left], [, right]) => Number(right?.cachedAt || 0) - Number(left?.cachedAt || 0))
     .slice(0, 200);
   LocalStore.set(CW_ENRICHMENT_CACHE_KEY, Object.fromEntries(entries));
+}
+
+function readContinueWatchingDisplaySnapshot(scopeKey) {
+  const key = String(scopeKey || "").trim();
+  if (!key) {
+    return [];
+  }
+  const store = LocalStore.get(CW_DISPLAY_SNAPSHOT_KEY, {});
+  const entry = store && typeof store === "object" ? store[key] : null;
+  if (!entry || !Array.isArray(entry.items)) {
+    return [];
+  }
+  if ((Date.now() - Number(entry.savedAt || 0)) > CW_DISPLAY_SNAPSHOT_MAX_AGE_MS) {
+    return [];
+  }
+  return entry.items;
+}
+
+function writeContinueWatchingDisplaySnapshot(scopeKey, items = []) {
+  const key = String(scopeKey || "").trim();
+  if (!key || !Array.isArray(items) || !items.length) {
+    return;
+  }
+  const store = LocalStore.get(CW_DISPLAY_SNAPSHOT_KEY, {});
+  const next = store && typeof store === "object" ? { ...store } : {};
+  next[key] = { savedAt: Date.now(), items: items.slice(0, CW_MAX_VISIBLE_ITEMS) };
+  const entries = Object.entries(next)
+    .sort(([, left], [, right]) => Number(right?.savedAt || 0) - Number(left?.savedAt || 0))
+    .slice(0, CW_DISPLAY_SNAPSHOT_MAX_SCOPES);
+  LocalStore.set(CW_DISPLAY_SNAPSHOT_KEY, Object.fromEntries(entries));
 }
 
 function buildContinueWatchingSignature(items = []) {
@@ -6178,7 +6210,8 @@ export const HomeScreen = {
     this.layoutPrefs = LayoutPreferences.get();
     this.layoutMode = String(this.layoutPrefs.homeLayout || "classic").toLowerCase();
     this.rows = [];
-    this.continueWatchingDisplay = [];
+    this.continueWatchingDisplay = readContinueWatchingDisplaySnapshot(watchProgressRepository.getContinueWatchingSourceKey());
+    this.continueWatchingHydratedFromSnapshot = Boolean(this.continueWatchingDisplay.length);
     this.continueWatchingLoading = false;
     this.heroCandidates = [];
     this.heroItem = null;
@@ -6204,7 +6237,8 @@ export const HomeScreen = {
     const watchedItemsPromise = watchedItemsRepository.getAll(2000).catch(() => []);
 
     const preserveContinueWatching = Boolean(background && this.continueWatchingDisplay?.length);
-    const suppressContinueWatchingLoading = preserveContinueWatching;
+    const hydratedFromSnapshot = Boolean(!background && this.continueWatchingHydratedFromSnapshot && this.continueWatchingDisplay?.length);
+    const suppressContinueWatchingLoading = preserveContinueWatching || hydratedFromSnapshot;
     const previousContinueWatchingSignature = preserveContinueWatching
       ? buildContinueWatchingSignature(this.continueWatchingDisplay)
       : "";
@@ -6220,54 +6254,9 @@ export const HomeScreen = {
       recentProgressError = error;
       return [];
     });
-    const initialContinueWatchingPromise = background ? null : (async () => {
-      const [allProgress, continueWatching] = await Promise.all([progressAllPromise, recentProgressPromise]);
-      const allProgressItems = Array.isArray(allProgress) ? allProgress : [];
-      const continueWatchingItems = Array.isArray(continueWatching) ? continueWatching : [];
-      const watchedItems = await watchedItemsPromise;
-      const nextUpProgressCandidates = this.selectNextUpProgressCandidates(allProgressItems, continueWatchingItems, watchedItems, {
-        applyDaysCap: !includeWatchedItemNextUpSeeds,
-        includeProgressSeeds: !includeWatchedItemNextUpSeeds,
-        includeWatchedItemSeeds: includeWatchedItemNextUpSeeds,
-        nextUpFromFurthestEpisode: prefs.nextUpFromFurthestEpisode
-      }).slice(0, CW_MAX_NEXT_UP_LOOKUPS);
-      const hasCandidates = Boolean(continueWatchingItems.length + nextUpProgressCandidates.length);
-      if (!hasCandidates) {
-        return {
-          allProgress: allProgressItems,
-          continueWatching: continueWatchingItems,
-          watchedItems,
-          nextUpProgressCandidates,
-          hasCandidates,
-          display: []
-        };
-      }
-      const enriched = await this.enrichContinueWatching(continueWatchingItems, {
-        allProgress: allProgressItems,
-        watchedItems,
-        nextUpProgressCandidates
-      });
-      const displayWithArtwork = buildVisibleContinueWatchingItems(enriched, { requireArtwork: true });
-      const displayWithoutArtwork = buildVisibleContinueWatchingItems(enriched, { requireArtwork: false });
-      const displayFallback = buildCompleteContinueWatchingDisplay(enriched);
-      const display = displayWithoutArtwork.length >= displayFallback.length
-        ? displayWithoutArtwork
-        : displayFallback;
-      return {
-        allProgress: allProgressItems,
-        continueWatching: continueWatchingItems,
-        watchedItems,
-        nextUpProgressCandidates,
-        hasCandidates,
-        needsMetadataRefresh: needsContinueWatchingMetadataRefresh(display),
-        display: displayWithArtwork.length === displayFallback.length
-          ? displayWithArtwork
-          : display
-      };
-    })().catch((error) => {
-      console.warn("Initial continue watching load failed", error);
-      return null;
-    });
+    // Continue Watching is reconciled fire-and-forget in the block below, so a
+    // slow addon or Trakt call never blocks catalog rows. The section paints
+    // instantly from the snapshot hydrated in mount().
 
     const addons = await addonRepository.getInstalledAddons();
     this.collections = CollectionsStore.get();
@@ -6313,41 +6302,16 @@ export const HomeScreen = {
     if (token !== this.homeLoadToken) {
       return;
     }
-    const [initialAllProgress, initialContinueWatching, initialContinueWatchingState] = await Promise.all([
-      progressAllPromise,
-      recentProgressPromise,
-      initialContinueWatchingPromise
-    ]);
-    if (token !== this.homeLoadToken) {
-      return;
-    }
-    const initialAllProgressItems = Array.isArray(initialAllProgress) ? initialAllProgress : [];
-    const initialContinueWatchingItems = Array.isArray(initialContinueWatching) ? initialContinueWatching : [];
-    const initialNextUpProgressCandidates = (initialContinueWatchingState?.nextUpProgressCandidates || this.selectNextUpProgressCandidates(initialAllProgressItems, initialContinueWatchingItems, [], {
-      applyDaysCap: !includeWatchedItemNextUpSeeds,
-      includeProgressSeeds: !includeWatchedItemNextUpSeeds,
-      includeWatchedItemSeeds: includeWatchedItemNextUpSeeds,
-      nextUpFromFurthestEpisode: prefs.nextUpFromFurthestEpisode
-    }))
-      .slice(0, CW_MAX_NEXT_UP_LOOKUPS);
-    const hasInitialContinueWatchingCandidates = Boolean(
-      initialContinueWatchingState?.hasCandidates
-      || initialContinueWatchingItems.length
-      || initialNextUpProgressCandidates.length
-    );
     this.rows = this.sortAndFilterRows(initialRows, this.collections);
-    if (!preserveContinueWatching) {
-      this.continueWatchingDisplay = initialContinueWatchingState?.display || [];
+    if (preserveContinueWatching) {
       this.continueWatchingLoading = false;
-      this.allProgress = initialContinueWatchingState?.allProgress || initialAllProgressItems;
-      this.continueWatching = initialContinueWatchingState?.continueWatching || initialContinueWatchingItems;
-      this.watchedItems = initialContinueWatchingState?.watchedItems || [];
-      this.nextUpProgressCandidates = initialNextUpProgressCandidates;
-      if (!background && this.layoutMode === "modern" && hasInitialContinueWatchingCandidates && this.continueWatchingDisplay.length) {
-        this.forceInitialContinueWatchingFocus = true;
-      }
-    } else {
-      this.continueWatchingLoading = false;
+    } else if (!background
+      && this.layoutMode === "modern"
+      && this.continueWatchingHydratedFromSnapshot
+      && this.continueWatchingDisplay?.length) {
+      // CW already painted instantly from the snapshot — focus it on this render.
+      // Fresh data reconciles fire-and-forget below.
+      this.forceInitialContinueWatchingFocus = true;
     }
     this.heroCandidates = uniqueById(this.collectHeroCandidates(this.rows));
     this.heroIndex = 0;
@@ -6430,7 +6394,7 @@ export const HomeScreen = {
       });
     }
 
-    if (background || !initialContinueWatchingState?.display?.length || initialContinueWatchingState?.needsMetadataRefresh) {
+    {
       (async () => {
       const [allProgress, continueWatching] = await Promise.all([progressAllPromise, recentProgressPromise]);
       if (token !== this.homeLoadToken || Router.getCurrent() !== "home") {
@@ -6438,7 +6402,7 @@ export const HomeScreen = {
       }
       this.allProgress = Array.isArray(allProgress) ? allProgress : [];
       this.continueWatching = Array.isArray(continueWatching) ? continueWatching : [];
-      this.watchedItems = initialContinueWatchingState?.watchedItems || await watchedItemsPromise;
+      this.watchedItems = await watchedItemsPromise;
       if (token !== this.homeLoadToken || Router.getCurrent() !== "home") {
         return;
       }
@@ -6485,9 +6449,7 @@ export const HomeScreen = {
         const enriched = await this.enrichContinueWatching(this.continueWatching, {
           allProgress: this.allProgress,
           watchedItems: this.watchedItems,
-          nextUpProgressCandidates: this.nextUpProgressCandidates,
-          metaTimeoutMs: initialContinueWatchingState?.needsMetadataRefresh ? CW_META_RETRY_TIMEOUT_MS : undefined,
-          forceRefreshMetadata: Boolean(initialContinueWatchingState?.needsMetadataRefresh)
+          nextUpProgressCandidates: this.nextUpProgressCandidates
         });
         if (token !== this.homeLoadToken || Router.getCurrent() !== "home") {
           return;
@@ -6507,6 +6469,7 @@ export const HomeScreen = {
         }
         this.continueWatchingDisplay = nextDisplay;
         this.continueWatchingLoading = false;
+        this.persistContinueWatchingSnapshot();
         if (this.layoutMode === "modern" && this.continueWatchingDisplay.length) {
           this.heroItem = this.pickInitialHero();
           if (!background && !this.hasAppliedInitialContinueWatchingFocus) {
@@ -7324,76 +7287,84 @@ export const HomeScreen = {
       .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0));
   },
 
-  async enrichContinueWatching(items = [], options = {}) {
-    const inProgressItems = await Promise.all((items || []).map(async (item) => {
-      const cachedItem = applyCachedContinueWatchingEnrichment(item);
-      if (!options?.forceRefreshMetadata && !needsContinueWatchingMetadataRefresh([cachedItem])) {
-        return cachedItem;
-      }
-      try {
-        const meta = await this.fetchMetaForContinueWatching(
-          item.contentType || "movie",
-          item.contentId,
-          options?.metaTimeoutMs || 1800
-        );
-        if (meta) {
-          const episodeEntry = findEpisodeEntry(meta.videos, item.season, item.episode);
-          const enriched = {
-            ...item,
-            title: meta.name || prettyId(item.contentId),
-            landscapePoster: meta.landscapePoster || meta.thumbnail || meta.backdrop || meta.background || null,
-            episodeThumbnail: episodeEntry?.thumbnail || meta.episodeThumbnail || item.episodeThumbnail || null,
-            poster: meta.poster || meta.thumbnail || meta.background || meta.backdrop || null,
-            background: meta.background || meta.backdrop || meta.thumbnail || meta.poster || null,
-            backdrop: meta.backdrop || meta.background || null,
-            thumbnail: meta.thumbnail || meta.poster || null,
-            logo: meta.logo || null,
-            description: meta.description || "",
-            releaseInfo: meta.releaseInfo || "",
-            imdbRating: resolveImdbRating(meta),
-            genres: Array.isArray(meta.genres) ? meta.genres : [],
-            runtimeMinutes: Number(meta.runtimeMinutes ?? meta.runtime ?? 0) || 0,
-            ageRating: firstNonEmpty(meta.ageRating, meta.age_rating),
-            status: firstNonEmpty(meta.status),
-            language: firstNonEmpty(meta.language),
-            country: firstNonEmpty(meta.country),
-            episodeTitle: firstNonEmpty(episodeEntry?.title, item.episodeTitle, item.subtitle),
-            episodeDescription: firstNonEmpty(episodeEntry?.overview, item.episodeDescription, item.episode_description)
-          };
-          saveContinueWatchingEnrichment(enriched);
-          return enriched;
-        }
-      } catch (error) {
-        console.warn("Continue watching enrichment failed", error);
-      }
-      return {
-        ...cachedItem,
-        title: firstNonEmpty(cachedItem.title, cachedItem.name),
-        landscapePoster: cachedItem.landscapePoster || cachedItem.thumbnail || cachedItem.backdrop || cachedItem.background || null,
-        episodeThumbnail: cachedItem.episodeThumbnail || null,
-        poster: cachedItem.poster || cachedItem.thumbnail || null,
-        background: cachedItem.background || cachedItem.backdrop || cachedItem.poster || null,
-        backdrop: cachedItem.backdrop || cachedItem.background || null,
-        thumbnail: cachedItem.thumbnail || cachedItem.poster || null,
-        logo: cachedItem.logo || null,
-        description: cachedItem.description || "",
-        releaseInfo: cachedItem.releaseInfo || "",
-        genres: Array.isArray(cachedItem.genres) ? cachedItem.genres : [],
-        runtimeMinutes: Number(cachedItem.runtimeMinutes ?? cachedItem.runtime ?? 0) || 0,
-        ageRating: firstNonEmpty(cachedItem.ageRating, cachedItem.age_rating),
-        status: firstNonEmpty(cachedItem.status),
-        language: firstNonEmpty(cachedItem.language),
-        country: firstNonEmpty(cachedItem.country),
-        episodeTitle: firstNonEmpty(cachedItem.episodeTitle, cachedItem.subtitle)
-      };
-    }));
+  persistContinueWatchingSnapshot() {
+    writeContinueWatchingDisplaySnapshot(
+      watchProgressRepository.getContinueWatchingSourceKey(),
+      this.continueWatchingDisplay
+    );
+  },
 
-    const nextUpItems = await this.buildNextUpItems({
-      allProgress: options?.allProgress || [],
-      inProgressItems,
-      nextUpProgressCandidates: options?.nextUpProgressCandidates || [],
-      watchedItems: options?.watchedItems || []
-    });
+  async enrichContinueWatching(items = [], options = {}) {
+    const [inProgressItems, nextUpItems] = await Promise.all([
+      Promise.all((items || []).map(async (item) => {
+        const cachedItem = applyCachedContinueWatchingEnrichment(item);
+        if (!options?.forceRefreshMetadata && !needsContinueWatchingMetadataRefresh([cachedItem])) {
+          return cachedItem;
+        }
+        try {
+          const meta = await this.fetchMetaForContinueWatching(
+            item.contentType || "movie",
+            item.contentId,
+            options?.metaTimeoutMs || 1800
+          );
+          if (meta) {
+            const episodeEntry = findEpisodeEntry(meta.videos, item.season, item.episode);
+            const enriched = {
+              ...item,
+              title: meta.name || prettyId(item.contentId),
+              landscapePoster: meta.landscapePoster || meta.thumbnail || meta.backdrop || meta.background || null,
+              episodeThumbnail: episodeEntry?.thumbnail || meta.episodeThumbnail || item.episodeThumbnail || null,
+              poster: meta.poster || meta.thumbnail || meta.background || meta.backdrop || null,
+              background: meta.background || meta.backdrop || meta.thumbnail || meta.poster || null,
+              backdrop: meta.backdrop || meta.background || null,
+              thumbnail: meta.thumbnail || meta.poster || null,
+              logo: meta.logo || null,
+              description: meta.description || "",
+              releaseInfo: meta.releaseInfo || "",
+              imdbRating: resolveImdbRating(meta),
+              genres: Array.isArray(meta.genres) ? meta.genres : [],
+              runtimeMinutes: Number(meta.runtimeMinutes ?? meta.runtime ?? 0) || 0,
+              ageRating: firstNonEmpty(meta.ageRating, meta.age_rating),
+              status: firstNonEmpty(meta.status),
+              language: firstNonEmpty(meta.language),
+              country: firstNonEmpty(meta.country),
+              episodeTitle: firstNonEmpty(episodeEntry?.title, item.episodeTitle, item.subtitle),
+              episodeDescription: firstNonEmpty(episodeEntry?.overview, item.episodeDescription, item.episode_description)
+            };
+            saveContinueWatchingEnrichment(enriched);
+            return enriched;
+          }
+        } catch (error) {
+          console.warn("Continue watching enrichment failed", error);
+        }
+        return {
+          ...cachedItem,
+          title: firstNonEmpty(cachedItem.title, cachedItem.name),
+          landscapePoster: cachedItem.landscapePoster || cachedItem.thumbnail || cachedItem.backdrop || cachedItem.background || null,
+          episodeThumbnail: cachedItem.episodeThumbnail || null,
+          poster: cachedItem.poster || cachedItem.thumbnail || null,
+          background: cachedItem.background || cachedItem.backdrop || cachedItem.poster || null,
+          backdrop: cachedItem.backdrop || cachedItem.background || null,
+          thumbnail: cachedItem.thumbnail || cachedItem.poster || null,
+          logo: cachedItem.logo || null,
+          description: cachedItem.description || "",
+          releaseInfo: cachedItem.releaseInfo || "",
+          genres: Array.isArray(cachedItem.genres) ? cachedItem.genres : [],
+          runtimeMinutes: Number(cachedItem.runtimeMinutes ?? cachedItem.runtime ?? 0) || 0,
+          ageRating: firstNonEmpty(cachedItem.ageRating, cachedItem.age_rating),
+          status: firstNonEmpty(cachedItem.status),
+          language: firstNonEmpty(cachedItem.language),
+          country: firstNonEmpty(cachedItem.country),
+          episodeTitle: firstNonEmpty(cachedItem.episodeTitle, cachedItem.subtitle)
+        };
+      })),
+      this.buildNextUpItems({
+        allProgress: options?.allProgress || [],
+        inProgressItems: items || [],
+        nextUpProgressCandidates: options?.nextUpProgressCandidates || [],
+        watchedItems: options?.watchedItems || []
+      })
+    ]);
 
     const inProgressSeriesIds = new Set(
       inProgressItems
