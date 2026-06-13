@@ -43,6 +43,10 @@ function buildNormalizedEvent(event) {
   };
 }
 
+function hasActiveModal() {
+  return Boolean(globalThis?.document?.body?.classList?.contains("nuvio-modal-open"));
+}
+
 export const FocusEngine = {
   lastBackHandledAt: 0,
   lastPointerFocusTarget: null,
@@ -97,6 +101,10 @@ export const FocusEngine = {
       return;
     }
 
+    if (hasActiveModal()) {
+      return;
+    }
+
     const normalizedEvent = buildNormalizedEvent(event);
     const keyIdentity = this.getKeyIdentity(normalizedEvent);
     if (keyIdentity && !this.activeKeyDownStartedAt.has(keyIdentity)) {
@@ -127,6 +135,10 @@ export const FocusEngine = {
 
   handleKeyUp(event) {
     if (event?.target && !document.contains(event.target)) return;
+
+    if (hasActiveModal()) {
+      return;
+    }
 
     const normalizedEvent = buildNormalizedEvent(event);
     const keyIdentity = this.getKeyIdentity(normalizedEvent);
@@ -183,6 +195,9 @@ export const FocusEngine = {
 
   focusPointerTarget(target, event = null) {
     if (!target) {
+      return false;
+    }
+    if (hasActiveModal() && !target.closest?.(".nuvio-dialog-backdrop")) {
       return false;
     }
     const currentScreen = Router.getCurrentScreen();
@@ -242,6 +257,9 @@ export const FocusEngine = {
     if (!target || target === this.lastPointerFocusTarget) {
       return;
     }
+    if (hasActiveModal() && !target.closest?.(".nuvio-dialog-backdrop")) {
+      return;
+    }
     this.focusPointerTarget(target, event);
   },
 
@@ -253,8 +271,14 @@ export const FocusEngine = {
     if (!target) {
       return;
     }
+    if (hasActiveModal() && !target.closest?.(".nuvio-dialog-backdrop")) {
+      return;
+    }
     this.focusPointerTarget(target, event);
     const currentScreen = Router.getCurrentScreen();
+    if (hasActiveModal()) {
+      return;
+    }
     if (typeof currentScreen?.onPointerActivate !== "function") {
       return;
     }

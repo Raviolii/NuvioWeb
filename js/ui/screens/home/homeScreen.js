@@ -2408,6 +2408,9 @@ export const HomeScreen = {
   },
 
   restoreFocusState(state = null) {
+    if (this.homeHoldFocusLocked) {
+      return false;
+    }
     const focusState = state?.layoutMode === this.layoutMode
       ? state
       : (this.savedFocusStates?.[this.layoutMode] || null);
@@ -2423,7 +2426,7 @@ export const HomeScreen = {
   },
 
   restoreModernFocusState(focusState) {
-    if (!focusState || this.layoutMode !== "modern") {
+    if (this.homeHoldFocusLocked || !focusState || this.layoutMode !== "modern") {
       return false;
     }
 
@@ -2470,7 +2473,7 @@ export const HomeScreen = {
   },
 
   restoreLegacyFocusState(focusState) {
-    if (!focusState || !["classic", "grid"].includes(this.layoutMode)) {
+    if (this.homeHoldFocusLocked || !focusState || !["classic", "grid"].includes(this.layoutMode)) {
       return false;
     }
 
@@ -2523,6 +2526,9 @@ export const HomeScreen = {
   },
 
   focusInitialContinueWatchingCard() {
+    if (this.homeHoldFocusLocked) {
+      return false;
+    }
     const target = this.container?.querySelector(".home-row-continue .home-content-card.focusable") || null;
     if (!target) {
       return false;
@@ -6749,7 +6755,7 @@ export const HomeScreen = {
     const showPosterLabels = this.layoutPrefs?.posterLabelsEnabled !== false;
     const showCatalogAddonName = this.layoutPrefs?.catalogAddonNameEnabled !== false;
     const showCatalogTypeSuffix = this.layoutPrefs?.catalogTypeSuffixEnabled !== false;
-    const focusState = retainedFocusState && retainedFocusState.focusKind === "item"
+    const focusState = !this.homeHoldFocusLocked && retainedFocusState && retainedFocusState.focusKind === "item"
       ? retainedFocusState
       : null;
     const expandFocusedPoster = this.layoutMode === "modern"
@@ -6914,7 +6920,7 @@ export const HomeScreen = {
       this.forceInitialContinueWatchingFocus = false;
       restoredFocus = this.focusInitialContinueWatchingCard();
       this.hasAppliedInitialContinueWatchingFocus = restoredFocus;
-    } else if (canAttemptRestore) {
+    } else if (canAttemptRestore && !this.homeHoldFocusLocked) {
       restoredFocus = this.restoreFocusState(retainedFocusState);
       if (restoredFocus) {
         this.isRestoringFocusFromBack = false;

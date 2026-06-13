@@ -318,6 +318,10 @@ export const LibraryScreen = {
     }
   },
 
+  isModalFocusLocked() {
+    return Boolean(this.posterOptionsController?.dialog);
+  },
+
   renderLoading() {
     this.container.innerHTML = `
       <div class="home-shell library-shell${this.libraryRouteEnterPending ? " library-route-enter" : ""}">
@@ -490,6 +494,9 @@ export const LibraryScreen = {
       onSelectedAction: () => this.focusMainNode(),
       onExpandSidebar: () => this.focusSidebarNode()
     });
+    if (this.isModalFocusLocked()) {
+      return;
+    }
 
     if (this.pendingPickerRestore) {
       const target = this.container.querySelector(`.library-picker-anchor[data-picker="${selectorValue(this.pendingPickerRestore)}"]`);
@@ -753,6 +760,9 @@ export const LibraryScreen = {
       onSelectedAction: () => this.focusMainNode(),
       onExpandSidebar: () => this.focusSidebarNode()
     });
+    if (this.isModalFocusLocked()) {
+      return;
+    }
     this.restoreFocus();
   },
 
@@ -894,6 +904,9 @@ export const LibraryScreen = {
   },
 
   restoreFocus() {
+    if (this.isModalFocusLocked()) {
+      return;
+    }
     const state = this.controller.getState();
     let selector = null;
 
@@ -1565,6 +1578,10 @@ export const LibraryScreen = {
       } else {
         await this.focusSidebarNode();
       }
+      return;
+    }
+
+    if (this.isModalFocusLocked()) {
       return;
     }
 

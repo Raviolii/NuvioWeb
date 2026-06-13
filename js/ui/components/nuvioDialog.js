@@ -145,6 +145,7 @@ export class NuvioDialog {
 
     backdrop.appendChild(panel);
     container.appendChild(backdrop);
+    document.body?.classList?.add("nuvio-modal-open");
 
     this._backdrop = backdrop;
     this._panel = panel;
@@ -279,5 +280,10 @@ export class NuvioDialog {
 
     // Remove after animation completes (150ms exit)
     setTimeout(() => backdrop.remove(), 200);
+    setTimeout(() => {
+      if (!document.querySelector(".nuvio-dialog-backdrop")) {
+        document.body?.classList?.remove("nuvio-modal-open");
+      }
+    }, 220);
   }
 }

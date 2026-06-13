@@ -34,6 +34,34 @@ export const ScreenUtils = {
   },
 
   setInitialFocus(container, selector = ".focusable") {
+    const modalOpen = Boolean(globalThis?.document?.body?.classList?.contains("nuvio-modal-open"));
+    if (modalOpen) {
+      const existingFocused = container?.querySelector?.(".focusable.focused") || null;
+      if (existingFocused instanceof HTMLElement && container?.contains(existingFocused)) {
+        try {
+          existingFocused.focus({ preventScroll: true });
+        } catch (_) {
+          try {
+            existingFocused.focus();
+          } catch (_) {
+          }
+        }
+        return existingFocused;
+      }
+      return null;
+    }
+    const existingFocused = container?.querySelector?.(".focusable.focused") || null;
+    if (existingFocused instanceof HTMLElement && container?.contains(existingFocused)) {
+      try {
+        existingFocused.focus({ preventScroll: true });
+      } catch (_) {
+        try {
+          existingFocused.focus();
+        } catch (_) {
+        }
+      }
+      return existingFocused;
+    }
     const first = container?.querySelector(selector);
     if (!first) {
       return;
@@ -43,6 +71,9 @@ export const ScreenUtils = {
   },
 
   moveFocus(container, direction, selector = ".focusable") {
+    if (globalThis?.document?.body?.classList?.contains("nuvio-modal-open")) {
+      return;
+    }
     const list = Array.from(container?.querySelectorAll(selector) || []);
     const current = container?.querySelector(`${selector}.focused`);
     if (!list.length || !current) {
@@ -61,6 +92,9 @@ export const ScreenUtils = {
   },
 
   moveFocusDirectional(container, direction, selector = ".focusable") {
+    if (globalThis?.document?.body?.classList?.contains("nuvio-modal-open")) {
+      return;
+    }
     const list = Array.from(container?.querySelectorAll(selector) || [])
       .filter((node) => {
         const rect = node.getBoundingClientRect();
@@ -195,6 +229,9 @@ export const ScreenUtils = {
   },
 
   handleDpadNavigation(event, container, selector = ".focusable") {
+    if (globalThis?.document?.body?.classList?.contains("nuvio-modal-open")) {
+      return false;
+    }
     const code = Number(event?.keyCode || 0);
     const direction = code === 38 ? "up"
       : code === 40 ? "down"
