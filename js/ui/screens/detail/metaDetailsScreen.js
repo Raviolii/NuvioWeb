@@ -677,10 +677,14 @@ function shouldUseDirectYoutubeEmbedOnTv() {
 }
 
 function getYoutubeProxyBaseUrl() {
+  const configured = String(YOUTUBE_PROXY_URL || "").trim();
   if (Platform.isWebOS() || Platform.isTizen()) {
-    return LOCAL_YOUTUBE_PROXY_URL;
+    // The local proxy is served from a file:// origin, which YouTube rejects
+    // (embed error 153). Prefer a configured https-hosted proxy when available
+    // so the embedding origin is valid; otherwise fall back to the local file.
+    return /^https?:\/\//i.test(configured) ? configured : LOCAL_YOUTUBE_PROXY_URL;
   }
-  return String(YOUTUBE_PROXY_URL || LOCAL_YOUTUBE_PROXY_URL).trim();
+  return configured || LOCAL_YOUTUBE_PROXY_URL;
 }
 
 function resolveTrailerPostMessageTargetOrigin(src = "") {
@@ -745,7 +749,7 @@ function buildYoutubeEmbedUrl(ytId = "", { muted = true } = {}) {
       const proxyUrl = new URL(proxyBase, globalThis?.location?.href || "https://example.com/");
       proxyUrl.searchParams.set("v", cleanId);
       proxyUrl.searchParams.set("autoplay", "1");
-      proxyUrl.searchParams.set("muted", "1");
+      proxyUrl.searchParams.set("muted", muted ? "1" : "0");
       proxyUrl.searchParams.set("controls", "0");
       proxyUrl.searchParams.set("loop", "1");
       proxyUrl.searchParams.set("playlist", cleanId);
@@ -2089,6 +2093,13 @@ export const MetaDetailsScreen = {
   },
 
   render(meta, focusRestore = undefined) {
+    if (this._sectionsUpdateRaf) {
+      const cancelRaf = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+      cancelRaf(this._sectionsUpdateRaf);
+      this._sectionsUpdateRaf = null;
+      this._pendingSectionsMeta = null;
+      this._pendingSectionsFocusRestore = null;
+    }
     if (focusRestore !== undefined) {
       this.pendingFocusRestore = focusRestore;
     } else if (!this.pendingFocusRestore) {
@@ -2159,7 +2170,7 @@ export const MetaDetailsScreen = {
 
     this.container.innerHTML = `
       <div class="series-detail-shell${this.isTrailerPlaying ? " detail-trailer-active" : ""}">
-        <div class="series-detail-backdrop"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
+        <div class="series-detail-backdrop" data-backdrop-url="${escapeAttribute(backdrop || "")}"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
         <div class="detail-trailer-layer"></div>
         <div class="series-detail-vignette"></div>
         <div class="detail-bottom-shadow"></div>
@@ -2381,7 +2392,7 @@ export const MetaDetailsScreen = {
 
     this.container.innerHTML = `
       <div class="series-detail-shell movie-detail-shell${this.isTrailerPlaying ? " detail-trailer-active" : ""}">
-        <div class="series-detail-backdrop"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
+        <div class="series-detail-backdrop" data-backdrop-url="${escapeAttribute(backdrop || "")}"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
         <div class="detail-trailer-layer"></div>
         <div class="series-detail-vignette"></div>
         <div class="detail-bottom-shadow"></div>
@@ -2409,20 +2420,75 @@ export const MetaDetailsScreen = {
     this.restoredTrackScrollLeftByKey = captureHorizontalScrollMap(this.container);
   },
 
+  applyDetailBackdrop(meta) {
+    const node = this.container?.querySelector(".series-detail-backdrop");
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+    const desired = String(meta?.background || meta?.poster || "");
+    if (node.dataset.backdropUrl === desired) {
+      return;
+    }
+    node.dataset.backdropUrl = desired;
+    if (!desired) {
+      node.style.backgroundImage = "";
+      return;
+    }
+    const token = this.detailLoadToken;
+    const apply = () => {
+      if (this.detailLoadToken !== token) {
+        return;
+      }
+      const current = this.container?.querySelector(".series-detail-backdrop");
+      if (current instanceof HTMLElement && current.dataset.backdropUrl === desired) {
+        current.style.backgroundImage = `url('${desired.replace(/'/g, "%27")}')`;
+      }
+    };
+    if (typeof Image === "function") {
+      const preload = new Image();
+      preload.onload = apply;
+      preload.onerror = apply;
+      preload.src = desired;
+    } else {
+      apply();
+    }
+  },
+
   updateRenderedDetailSections(meta, focusRestoreOverride = null) {
     if (!this.container || !meta || !this.container.querySelector(".series-detail-shell")) {
       this.render(meta, focusRestoreOverride || null);
       return;
     }
+    this._pendingSectionsMeta = meta;
+    if (focusRestoreOverride) {
+      this._pendingSectionsFocusRestore = focusRestoreOverride;
+    }
+    if (this._sectionsUpdateRaf) {
+      return;
+    }
+    const raf = typeof requestAnimationFrame === "function"
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    this._sectionsUpdateRaf = raf(() => {
+      this._sectionsUpdateRaf = null;
+      const pendingMeta = this._pendingSectionsMeta;
+      const pendingFocus = this._pendingSectionsFocusRestore || null;
+      this._pendingSectionsMeta = null;
+      this._pendingSectionsFocusRestore = null;
+      if (pendingMeta) {
+        this._renderDetailSectionsNow(pendingMeta, pendingFocus);
+      }
+    });
+  },
 
+  _renderDetailSectionsNow(meta, focusRestoreOverride = null) {
+    if (!this.container || !this.container.querySelector(".series-detail-shell")) {
+      return;
+    }
     const focusRestore = focusRestoreOverride || this.captureDetailFocus();
     this.captureRenderedChromeState();
     const isSeries = isSeriesDetailMeta(meta, this.episodes);
-    const backdropNode = this.container.querySelector(".series-detail-backdrop");
-    if (backdropNode instanceof HTMLElement) {
-      const backdrop = meta.background || meta.poster || "";
-      backdropNode.style.backgroundImage = backdrop ? `url('${backdrop.replace(/'/g, "%27")}')` : "";
-    }
+    this.applyDetailBackdrop(meta);
 
     const heroMount = this.container.querySelector("#detailHeroSection");
     if (heroMount) {
@@ -2999,7 +3065,7 @@ export const MetaDetailsScreen = {
   },
 
   isPosterHoldTarget(node) {
-    return Boolean(node?.matches?.(".detail-morelike-card.focusable"));
+    return Boolean(node?.matches?.(".detail-morelike-card.focusable:not(.detail-trailer-card)"));
   },
 
   isHeroHoldTarget(node) {
@@ -3246,8 +3312,12 @@ export const MetaDetailsScreen = {
   },
 
   openMoreLikeDetailFromNode(node) {
+    const itemId = String(node?.dataset?.itemId || "").trim();
+    if (!itemId) {
+      return;
+    }
     Router.navigate("detail", {
-      itemId: node.dataset.itemId,
+      itemId,
       itemType: node.dataset.itemType || "movie",
       fallbackTitle: node.dataset.itemTitle || "Untitled"
     });

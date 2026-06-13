@@ -28,9 +28,13 @@ html, body {
 (function nuvioYoutubeProxy() {
   var player = null;
   var ready = false;
+  var fallbackUsed = false;
+  var readyWatchdog = null;
   var lastStatePayload = "";
   var stateTimer = null;
   var pageOrigin = String((location && location.origin) || "").trim();
+  var pageOriginIsHttp = /^https?:\/\//i.test(pageOrigin);
+  var widgetReferrer = pageOriginIsHttp ? location.href : "https://www.youtube.com";
   var params = parseQuery(String((location && location.search) || ""));
   var cacheBuster = params._cb || (String(Date.now()) + "-" + Math.random().toString(36).slice(2, 8));
   var videoId = params.v || "qBg39HCJiTU";
@@ -191,10 +195,53 @@ html, body {
     }
   });
 
+  function fallbackToDirectEmbed() {
+    if (fallbackUsed) {
+      return;
+    }
+    fallbackUsed = true;
+    if (readyWatchdog) {
+      clearTimeout(readyWatchdog);
+      readyWatchdog = null;
+    }
+    if (stateTimer) {
+      clearInterval(stateTimer);
+      stateTimer = null;
+    }
+    safeCall(function destroyPlayer() {
+      return player && player.destroy && player.destroy();
+    }, null);
+    player = null;
+    var directParams = [
+      "autoplay=" + (autoplay ? "1" : "0"),
+      "mute=" + (startMuted ? "1" : "0"),
+      "controls=0",
+      "loop=" + (loop ? "1" : "0"),
+      "playlist=" + encodeURIComponent(videoId),
+      "playsinline=1",
+      "rel=0",
+      "modestbranding=1",
+      "iv_load_policy=3",
+      "widget_referrer=" + encodeURIComponent(widgetReferrer)
+    ].join("&");
+    var src = "https://www.youtube.com/embed/" + encodeURIComponent(videoId) + "?" + directParams;
+    document.body.innerHTML = '<iframe id="yt" src="' + src + '" frameborder="0" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>';
+    postToParent("state", {
+      state: {
+        currentTime: 0,
+        duration: 0,
+        paused: false,
+        muted: startMuted,
+        loading: false,
+        controllable: false
+      }
+    });
+  }
+
   window.onYouTubeIframeAPIReady = function onYouTubeIframeAPIReady() {
     player = new YT.Player("yt", {
       videoId: videoId,
-      host: "https://www.youtube-nocookie.com",
+      host: "https://www.youtube.com",
       playerVars: {
         autoplay: autoplay ? 1 : 0,
         controls: 0,
@@ -203,15 +250,19 @@ html, body {
         fs: 0,
         loop: loop ? 1 : 0,
         modestbranding: 1,
-        origin: /^https?:\/\//i.test(pageOrigin) ? pageOrigin : undefined,
+        origin: pageOriginIsHttp ? pageOrigin : undefined,
         playsinline: 1,
         playlist: loop ? videoId : undefined,
         rel: 0,
-        widget_referrer: location.href
+        widget_referrer: widgetReferrer
       },
       events: {
         onReady: function onReady(event) {
           ready = true;
+          if (readyWatchdog) {
+            clearTimeout(readyWatchdog);
+            readyWatchdog = null;
+          }
           if (startMuted) {
             event.target.mute();
           } else {
@@ -232,20 +283,20 @@ html, body {
           pushState(true);
         },
         onError: function onError(event) {
-          postToParent("state", {
-            state: {
-              currentTime: 0,
-              duration: 0,
-              paused: true,
-              muted: startMuted,
-              loading: false,
-              controllable: false,
-              error: Number(event && event.data || 0)
-            }
-          });
+          fallbackToDirectEmbed();
         }
       }
     });
+
+    // Error 153 ("configuration error") is shown on-screen by the player but is
+    // not reliably dispatched through onError, so if the player never becomes
+    // ready, recover by loading the video through a direct youtube.com embed.
+    readyWatchdog = setTimeout(function watchdogTick() {
+      readyWatchdog = null;
+      if (!ready) {
+        fallbackToDirectEmbed();
+      }
+    }, 4500);
   };
 
   var apiScript = document.createElement("script");

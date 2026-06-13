@@ -8,6 +8,20 @@ import { metaRepository } from "./metaRepository.js";
 
 const CW_PROGRESS_START_THRESHOLD = 0.02;
 const CW_PROGRESS_END_THRESHOLD = 0.85;
+// These bound a hung request so the fire-and-forget Continue Watching
+// reconciliation can't leak a never-resolving promise. They are NOT on the
+// app's critical path (the home screen paints from a snapshot), so they are
+// generous — only a genuinely stuck request is abandoned.
+const TRAKT_API_TIMEOUT_MS = 10000;
+const PROGRESS_META_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, ms, fallback) {
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((resolve) => { timer = setTimeout(() => resolve(fallback), ms); })
+  ]).finally(() => { if (timer) clearTimeout(timer); });
+}
 
 function activeProfileId() {
   return String(ProfileManager.getActiveProfileId() || "1");
@@ -241,26 +255,28 @@ const ENRICHED_META_CACHE_TTL_MS = 5 * 60 * 1000;
 async function batchEnrichProgressItems(items) {
   if (!items.length) return [];
   const now = Date.now();
-  const results = [];
-
-  for (const item of items) {
+  return Promise.all(items.map(async (item) => {
     const lookupId = item.imdbId || item.contentId;
     const cacheKey = `${item.contentType}:${lookupId}`;
     const cached = enrichedMetaCache.get(cacheKey);
-
     let meta = null;
     if (cached && (now - cached.timestamp) < ENRICHED_META_CACHE_TTL_MS) {
       meta = cached.meta;
     } else {
       const canonicalType = item.contentType === "series" ? "series" : "movie";
-      meta = await metaRepository.getMetaFromAllAddons(canonicalType, lookupId).catch(() => null);
-      enrichedMetaCache.set(cacheKey, { meta, timestamp: now });
+      meta = await withTimeout(
+        metaRepository.getMetaFromAllAddons(canonicalType, lookupId),
+        PROGRESS_META_TIMEOUT_MS,
+        null
+      ).catch(() => null);
+      // Only cache real metadata. Caching a null (timeout/miss) would leave the
+      // item unenriched for the full TTL after a single slow response.
+      if (meta) {
+        enrichedMetaCache.set(cacheKey, { meta, timestamp: now });
+      }
     }
-
-    results.push(meta ? { ...item, enrichedMeta: meta } : item);
-  }
-
-  return results;
+    return meta ? { ...item, enrichedMeta: meta } : item;
+  }));
 }
 
 class WatchProgressRepository {
@@ -302,15 +318,15 @@ class WatchProgressRepository {
     if (useTraktProgress && TraktAuthStore.isAuthenticated()) {
       // Parallelize all Trakt fetches via Promise.all
       const [history, playbackState, watchedShows] = await Promise.all([
-        TraktAuthService.fetchWatchHistory({ limit: 100 }).catch((err) => {
+        withTimeout(TraktAuthService.fetchWatchHistory({ limit: 100 }), TRAKT_API_TIMEOUT_MS, []).catch((err) => {
           console.warn("[CW] Trakt history fetch failed", err);
           return [];
         }),
-        TraktAuthService.fetchPlaybackState({ limit: 50 }).catch((err) => {
+        withTimeout(TraktAuthService.fetchPlaybackState({ limit: 50 }), TRAKT_API_TIMEOUT_MS, []).catch((err) => {
           console.warn("[CW] Trakt playback state fetch failed", err);
           return [];
         }),
-        TraktAuthService.fetchWatchedShows().catch((err) => {
+        withTimeout(TraktAuthService.fetchWatchedShows(), TRAKT_API_TIMEOUT_MS, []).catch((err) => {
           console.warn("[CW] Trakt watched shows fetch failed", err);
           return [];
         })
