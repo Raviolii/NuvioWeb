@@ -2093,6 +2093,13 @@ export const MetaDetailsScreen = {
   },
 
   render(meta, focusRestore = undefined) {
+    if (this._sectionsUpdateRaf) {
+      const cancelRaf = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+      cancelRaf(this._sectionsUpdateRaf);
+      this._sectionsUpdateRaf = null;
+      this._pendingSectionsMeta = null;
+      this._pendingSectionsFocusRestore = null;
+    }
     if (focusRestore !== undefined) {
       this.pendingFocusRestore = focusRestore;
     } else if (!this.pendingFocusRestore) {
@@ -2163,7 +2170,7 @@ export const MetaDetailsScreen = {
 
     this.container.innerHTML = `
       <div class="series-detail-shell${this.isTrailerPlaying ? " detail-trailer-active" : ""}">
-        <div class="series-detail-backdrop"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
+        <div class="series-detail-backdrop" data-backdrop-url="${escapeAttribute(backdrop || "")}"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
         <div class="detail-trailer-layer"></div>
         <div class="series-detail-vignette"></div>
         <div class="detail-bottom-shadow"></div>
@@ -2385,7 +2392,7 @@ export const MetaDetailsScreen = {
 
     this.container.innerHTML = `
       <div class="series-detail-shell movie-detail-shell${this.isTrailerPlaying ? " detail-trailer-active" : ""}">
-        <div class="series-detail-backdrop"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
+        <div class="series-detail-backdrop" data-backdrop-url="${escapeAttribute(backdrop || "")}"${backdrop ? ` style="background-image:url('${backdrop.replace(/'/g, "%27")}')"` : ""}></div>
         <div class="detail-trailer-layer"></div>
         <div class="series-detail-vignette"></div>
         <div class="detail-bottom-shadow"></div>
@@ -2413,20 +2420,75 @@ export const MetaDetailsScreen = {
     this.restoredTrackScrollLeftByKey = captureHorizontalScrollMap(this.container);
   },
 
+  applyDetailBackdrop(meta) {
+    const node = this.container?.querySelector(".series-detail-backdrop");
+    if (!(node instanceof HTMLElement)) {
+      return;
+    }
+    const desired = String(meta?.background || meta?.poster || "");
+    if (node.dataset.backdropUrl === desired) {
+      return;
+    }
+    node.dataset.backdropUrl = desired;
+    if (!desired) {
+      node.style.backgroundImage = "";
+      return;
+    }
+    const token = this.detailLoadToken;
+    const apply = () => {
+      if (this.detailLoadToken !== token) {
+        return;
+      }
+      const current = this.container?.querySelector(".series-detail-backdrop");
+      if (current instanceof HTMLElement && current.dataset.backdropUrl === desired) {
+        current.style.backgroundImage = `url('${desired.replace(/'/g, "%27")}')`;
+      }
+    };
+    if (typeof Image === "function") {
+      const preload = new Image();
+      preload.onload = apply;
+      preload.onerror = apply;
+      preload.src = desired;
+    } else {
+      apply();
+    }
+  },
+
   updateRenderedDetailSections(meta, focusRestoreOverride = null) {
     if (!this.container || !meta || !this.container.querySelector(".series-detail-shell")) {
       this.render(meta, focusRestoreOverride || null);
       return;
     }
+    this._pendingSectionsMeta = meta;
+    if (focusRestoreOverride) {
+      this._pendingSectionsFocusRestore = focusRestoreOverride;
+    }
+    if (this._sectionsUpdateRaf) {
+      return;
+    }
+    const raf = typeof requestAnimationFrame === "function"
+      ? requestAnimationFrame
+      : (cb) => setTimeout(cb, 16);
+    this._sectionsUpdateRaf = raf(() => {
+      this._sectionsUpdateRaf = null;
+      const pendingMeta = this._pendingSectionsMeta;
+      const pendingFocus = this._pendingSectionsFocusRestore || null;
+      this._pendingSectionsMeta = null;
+      this._pendingSectionsFocusRestore = null;
+      if (pendingMeta) {
+        this._renderDetailSectionsNow(pendingMeta, pendingFocus);
+      }
+    });
+  },
 
+  _renderDetailSectionsNow(meta, focusRestoreOverride = null) {
+    if (!this.container || !this.container.querySelector(".series-detail-shell")) {
+      return;
+    }
     const focusRestore = focusRestoreOverride || this.captureDetailFocus();
     this.captureRenderedChromeState();
     const isSeries = isSeriesDetailMeta(meta, this.episodes);
-    const backdropNode = this.container.querySelector(".series-detail-backdrop");
-    if (backdropNode instanceof HTMLElement) {
-      const backdrop = meta.background || meta.poster || "";
-      backdropNode.style.backgroundImage = backdrop ? `url('${backdrop.replace(/'/g, "%27")}')` : "";
-    }
+    this.applyDetailBackdrop(meta);
 
     const heroMount = this.container.querySelector("#detailHeroSection");
     if (heroMount) {
