@@ -1,0 +1,68 @@
+/* Mobile iOS Optimizations */
+@media (max-width: 768px) {
+  :root {
+    --tv-safe-gutter: 16px;
+    --tv-card-radius: 12px;
+    --tv-card-gap: 12px;
+    --tv-button-height: 48px;
+    --tv-button-padding-x: 16px;
+    --tv-title-text: 32px;
+    --tv-subtitle-text: 20px;
+    --tv-body-text: 16px;
+  }
+
+  html, body, #app {
+    font-size: 16px;
+  }
+
+  .screen, #app {
+    height: 100dvh; /* Dynamic viewport for iOS */
+  }
+
+  /* Safe area for notches / Dynamic Island */
+  body, #app, .screen {
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Better touch targets */
+  .card, button, .focusable {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  /* Hide or simplify TV remote focus styles on mobile */
+  .card.focused {
+    transform: none;
+    box-shadow: 0 0 0 3px rgba(255,255,255,0.6);
+  }
+
+  /* Responsive rows & cards */
+  .row {
+    margin: 16px;
+  }
+
+  .card {
+    width: calc(50% - 12px);
+    height: auto;
+    aspect-ratio: 16 / 9;
+    margin-right: 12px;
+    margin-bottom: 12px;
+  }
+}
+
+/* General mobile fixes */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+video {
+  max-height: 100dvh;
+}
+
+/* Prevent zoom on inputs if any */
+input, select, textarea {
+  font-size: 16px;
+}
