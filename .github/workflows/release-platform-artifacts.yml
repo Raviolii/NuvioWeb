@@ -133,12 +133,30 @@ jobs:
           repository: ${{ vars.WEBOS_REPO }}
           token: ${{ secrets.REPO_DISPATCH_TOKEN }}
 
+      - name: Resolve live webOS release asset metadata
+        id: live_webos_asset
+        if: ${{ vars.WEBOS_REPO != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve-release-payload.outputs.tag }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          ASSET_NAME="NuvioTV-webOS-${RELEASE_TAG}.ipk"
+          ASSET_DIGEST=$(gh release view "$RELEASE_TAG" --repo "$SOURCE_REPO" --json assets --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .digest")
+          ASSET_SIZE=$(gh release view "$RELEASE_TAG" --repo "$SOURCE_REPO" --json assets --jq ".assets[] | select(.name == \"$ASSET_NAME\") | .size")
+          if [ -z "$ASSET_DIGEST" ] || [ "$ASSET_DIGEST" = "null" ] || [ -z "$ASSET_SIZE" ] || [ "$ASSET_SIZE" = "null" ]; then
+            echo "Unable to resolve release asset metadata for $ASSET_NAME" >&2
+            exit 1
+          fi
+          echo "package_sha256=${ASSET_DIGEST#sha256:}" >> "$GITHUB_OUTPUT"
+          echo "package_size=$ASSET_SIZE" >> "$GITHUB_OUTPUT"
+
       - name: Refresh Homebrew repository metadata
         if: ${{ vars.WEBOS_REPO != '' }}
         env:
           RELEASE_TAG: ${{ needs.resolve-release-payload.outputs.tag }}
-          PACKAGE_SHA256: ${{ needs.build-webos-release.outputs.package_sha256 }}
-          PACKAGE_SIZE: ${{ needs.build-webos-release.outputs.package_size }}
+          PACKAGE_SHA256: ${{ steps.live_webos_asset.outputs.package_sha256 }}
+          PACKAGE_SIZE: ${{ steps.live_webos_asset.outputs.package_size }}
           PACKAGE_VERSION: ${{ needs.build-webos-release.outputs.package_version }}
         run: |
           RELEASE_TAG="$RELEASE_TAG" PACKAGE_SHA256="$PACKAGE_SHA256" PACKAGE_SIZE="$PACKAGE_SIZE" PACKAGE_VERSION="$PACKAGE_VERSION" node -e "const fs=require('fs');const file='webosbrew/apps.json';const data=JSON.parse(fs.readFileSync(file,'utf8'));const pkg=data.packages[0];pkg.manifest.version=process.env.PACKAGE_VERSION;pkg.manifest.ipkUrl='https://github.com/NuvioMedia/NuvioWeb/releases/download/'+process.env.RELEASE_TAG+'/NuvioTV-webOS-'+process.env.RELEASE_TAG+'.ipk';pkg.manifest.ipkHash.sha256=process.env.PACKAGE_SHA256;pkg.manifest.ipkSize=Number(process.env.PACKAGE_SIZE);fs.writeFileSync(file, JSON.stringify(data, null, 2)+'\n');"
