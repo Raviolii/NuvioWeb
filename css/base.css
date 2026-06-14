@@ -23,7 +23,7 @@
     --border-color: #333333;
     --app-font-family: "Inter", "Segoe UI", Arial, sans-serif;
 
-    /* TV defaults (keep for larger screens) */
+    /* TV defaults */
     --tv-safe-gutter: clamp(28px, 3vw, 56px);
     --tv-safe-gutter-wide: clamp(32px, 3.6vw, 72px);
     --tv-card-radius: clamp(14px, 1.1vw, 22px);
@@ -38,9 +38,9 @@
     --tv-subtitle-text: clamp(24px, 1.7vw, 32px);
     --tv-title-text: clamp(42px, 2.9vw, 60px);
 
-    /* Mobile-specific overrides */
-    --mobile-card-width: calc(50% - 12px);
+    /* Mobile overrides */
     --mobile-safe-gutter: 16px;
+    --mobile-card-width: calc(50% - 12px);
 }
 
 html,
@@ -55,7 +55,7 @@ body {
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    touch-action: manipulation; /* Better touch handling */
+    touch-action: manipulation;
 }
 
 * {
@@ -77,7 +77,7 @@ body {
     height: 100vh;
 }
 
-/* Mobile-first responsive improvements */
+/* ==================== MOBILE RESPONSIVE ==================== */
 @media (max-width: 768px) {
     :root {
         --tv-safe-gutter: var(--mobile-safe-gutter);
@@ -95,21 +95,43 @@ body {
     }
 
     .row {
-        margin: 16px;
+        margin: 16px !important;
     }
 
     .card {
-        width: var(--mobile-card-width);
-        height: auto;
+        width: var(--mobile-card-width) !important;
+        height: auto !important;
         aspect-ratio: 16 / 9;
-        margin-right: 12px;
-        margin-bottom: 12px;
+        margin-right: 12px !important;
+        margin-bottom: 12px !important;
         border-radius: var(--tv-card-radius);
+        display: inline-block;
     }
 
     .card.focused {
-        transform: none; /* Remove TV-style scaling on mobile */
-        box-shadow: 0 0 0 3px rgba(255,255,255,0.6);
+        transform: none !important;
+        box-shadow: 0 0 0 3px rgba(255,255,255,0.6) !important;
+    }
+
+    /* Hide or collapse sidebar on mobile */
+    .sidebar,
+    .nav,
+    [class*="sidebar"],
+    [class*="nav-bar"],
+    .left-panel,
+    .menu {
+        display: none !important;
+    }
+
+    /* Make main content full width */
+    .main-content,
+    .content,
+    .screen > div:first-child,
+    .home-screen,
+    .detail-screen {
+        margin-left: 0 !important;
+        width: 100% !important;
+        padding: 0 16px !important;
     }
 }
 
@@ -124,9 +146,6 @@ body {
     overscroll-behavior: none;
 }
 
-/* Remove TV focus ring on mobile */
-@media (max-width: 768px) {
-    *:focus {
-        outline: none !important;
-    }
+*:focus {
+    outline: none !important;
 }
