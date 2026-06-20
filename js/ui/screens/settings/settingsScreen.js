@@ -1903,20 +1903,24 @@ export const SettingsScreen = {
     const streamResourceCount = Array.isArray(addon.resources)
       ? addon.resources.filter((resource) => resource?.name === "stream").length
       : 0;
+
+    let metaText = null;
+    if (typeof addon.pluginCount === "number" && addon.pluginCount > 0) {
+      const dateLabel = addon._fetchedAt ? new Date(addon._fetchedAt).toLocaleDateString() : null;
+      metaText = `${addon.pluginCount} plugins${dateLabel ? ` - Last updated: ${dateLabel}` : ""}`;
+    } else {
+      metaText = t(
+        streamResourceCount === 1 ? "settings.plugins.repoMetaSingular" : "settings.plugins.repoMetaPlural",
+        { count: streamResourceCount, version: addon.version || "0.0.0" }
+      );
+    }
+
     return `
       <article class="settings-plugin-repo-card">
         <div class="settings-plugin-repo-copy">
           <div class="settings-plugin-repo-title">${escapeHtml(addon.displayName || addon.name || t("common.repository"))}</div>
-          <div class="settings-plugin-repo-meta">
-            ${escapeHtml(
-              t(
-                streamResourceCount === 1
-                  ? "settings.plugins.repoMetaSingular"
-                  : "settings.plugins.repoMetaPlural",
-                { count: streamResourceCount, version: addon.version || "0.0.0" }
-              )
-            )}
-          </div>
+          ${addon._syncedFromCloud ? `<div class="settings-plugin-repo-cloud">${escapeHtml("Synced from cloud")}</div>` : ""}
+          <div class="settings-plugin-repo-meta">${escapeHtml(metaText)}</div>
           <div class="settings-plugin-repo-url">${escapeHtml(addon.baseUrl || addon.description || addonKindsLabel(addon))}</div>
         </div>
         <div class="settings-plugin-repo-actions">

@@ -267,6 +267,13 @@ class AddonRepository {
       const result = await safeApiCall(() => AddonApi.getManifest(manifestUrl));
       if (result.status === "success") {
         const addon = this.mapManifest(result.data, cleanBaseUrl);
+        // Mark when this manifest was fetched and that it came from remote
+        try {
+          addon._fetchedAt = new Date().toISOString();
+          addon._syncedFromCloud = true;
+        } catch (_) {
+          // ignore
+        }
         this.manifestCache.set(cleanBaseUrl, addon);
         this.manifestErrorCache.delete(cleanBaseUrl);
         return { status: "success", data: this.withDisplayNameOverride(addon) };
@@ -506,6 +513,57 @@ class AddonRepository {
   }
 
   mapManifest(manifest = {}, baseUrl) {
+    // Handle standard addon manifest shape
+    if (!manifest || typeof manifest !== "object") {
+      return {
+        id: baseUrl,
+        name: "Unknown Addon",
+        displayName: "Unknown Addon",
+        version: "0.0.0",
+        description: null,
+        logo: null,
+        baseUrl,
+        types: [],
+        rawTypes: [],
+        catalogs: [],
+        resources: []
+      };
+    }
+
+    // Backwards-compatible mapping for manifests that use `scrapers` (third-party plugin packs)
+    if (Array.isArray(manifest.scrapers) && manifest.scrapers.length) {
+      const scraperTypes = Array.from(
+        new Set(
+          manifest.scrapers
+            .map((s) => (Array.isArray(s.supportedTypes) ? s.supportedTypes : s.supportedTypes ? [s.supportedTypes] : []))
+            .flat()
+            .map((t) => String(t || "").trim())
+            .filter(Boolean)
+        )
+      );
+
+      const logo = manifest.logo || (manifest.scrapers[0] && manifest.scrapers[0].logo) || null;
+
+      return {
+        id: manifest.id || manifest.name || baseUrl,
+        name: manifest.name || manifest.id || "Unknown Addon",
+        displayName: manifest.name || manifest.id || "Unknown Addon",
+        version: manifest.version || "0.0.0",
+        description: manifest.description || null,
+        logo: this.normalizeManifestAssetUrl(logo, baseUrl),
+        baseUrl,
+        types: scraperTypes,
+        rawTypes: scraperTypes,
+        catalogs: [],
+        // Treat scrapers as stream providers
+        resources: scraperTypes.length
+          ? [{ name: "stream", types: scraperTypes, idPrefixes: null }]
+          : [],
+        // Extra metadata for UI: number of plugins in this repo
+        pluginCount: manifest.scrapers.length
+      };
+    }
+
     const types = (manifest.types || []).map((value) => String(value).trim()).filter(Boolean);
     const catalogs = (manifest.catalogs || []).map((catalog) => ({
       id: catalog.id,
