@@ -1,27 +1,16 @@
 import { access, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { transformAsync } from "@babel/core";
 import { readAppMetadata, syncVersionFiles } from "./appMetadata.mjs";
+import { runWebOsToolsBinary } from "./aresCli.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 
-function resolveAresBinary(binaryName) {
-  const require = createRequire(import.meta.url);
-  const packageJsonPath = require.resolve("@webos-tools/cli/package.json");
-  const packageJson = JSON.parse(require("fs").readFileSync(packageJsonPath, "utf8"));
-  const binPath = packageJson.bin?.[binaryName];
-  if (!binPath) {
-    throw new Error(`Binary ${binaryName} not found in @webos-tools/cli`);
-  }
-  return path.join(path.dirname(packageJsonPath), binPath);
-}
 const cacheDir = path.join(rootDir, ".cache");
 const stagingDir = path.join(cacheDir, "webos-package");
 const appStageDir = path.join(stagingDir, "app");
@@ -83,9 +72,7 @@ async function resolveWebOsScriptPath(targetDir) {
 }
 
 function buildWebOsIndexHtml({ webOsScriptPath = "" } = {}) {
-  const webOsScriptTag = webOsScriptPath
-    ? `  <script src="${webOsScriptPath}"></script>\n`
-    : "";
+  const webOsScriptTag = webOsScriptPath ? `  <script src="${webOsScriptPath}"></script>\n` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -125,12 +112,19 @@ async function stageApp() {
 
   await Promise.all([
     cp(path.join(rootDir, "assets", "images", "icon.png"), path.join(appStageDir, "icon.png")),
-    cp(path.join(rootDir, "assets", "images", "largeIcon.png"), path.join(appStageDir, "largeIcon.png")),
+    cp(
+      path.join(rootDir, "assets", "images", "largeIcon.png"),
+      path.join(appStageDir, "largeIcon.png")
+    ),
     cp(path.join(rootDir, "assets", "images", "splash.png"), path.join(appStageDir, "splash.png"))
   ]);
 
   const webOsScriptPath = await resolveWebOsScriptPath(appStageDir);
-  await writeFile(path.join(appStageDir, "index.html"), buildWebOsIndexHtml({ webOsScriptPath }), "utf8");
+  await writeFile(
+    path.join(appStageDir, "index.html"),
+    buildWebOsIndexHtml({ webOsScriptPath }),
+    "utf8"
+  );
 }
 
 async function stageService() {
@@ -143,8 +137,15 @@ async function stageService() {
   await mkdir(path.join(serviceStageDir, "runtime"), { recursive: true });
 
   await Promise.all([
-    writeFile(path.join(serviceStageDir, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8"),
-    cp(path.join(webOsServiceSourceDir, "services.json"), path.join(serviceStageDir, "services.json")),
+    writeFile(
+      path.join(serviceStageDir, "package.json"),
+      `${JSON.stringify(packageJson, null, 2)}\n`,
+      "utf8"
+    ),
+    cp(
+      path.join(webOsServiceSourceDir, "services.json"),
+      path.join(serviceStageDir, "services.json")
+    ),
     cp(
       path.join(webOsServiceSourceDir, "runtime", "media-http.cjs"),
       path.join(serviceStageDir, "runtime", "media-http.cjs")
@@ -173,24 +174,6 @@ async function stageService() {
   await rm(serviceTempBundlePath, { force: true });
 }
 
-function runCommand(command, args) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: rootDir,
-      stdio: "inherit"
-    });
-
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} exited with code ${code}`));
-    });
-  });
-}
-
 async function packageWebOs() {
   await syncVersionFiles();
   await assertDistExists();
@@ -201,14 +184,20 @@ async function packageWebOs() {
   await Promise.all([stageApp(), stageService()]);
 
   console.log("creating webOS IPK...");
-  const aresPackage = resolveAresBinary("ares-package");
   try {
-    await runCommand(aresPackage, [appStageDir, serviceStageDir, "--outdir", rootDir]);
+    await runWebOsToolsBinary("ares-package", [
+      appStageDir,
+      serviceStageDir,
+      "--outdir",
+      rootDir
+    ]);
   } catch (error) {
     const { version } = await readAppMetadata();
     const expectedIpk = path.join(rootDir, `space.nuvio.webos_${version}_all.ipk`);
     if (await pathExists(expectedIpk)) {
-      console.warn(`ares-package exited with an error, but ${expectedIpk} was created successfully. Continuing.`);
+      console.warn(
+        `ares-package exited with an error, but ${expectedIpk} was created successfully. Continuing.`
+      );
     } else {
       throw error;
     }

@@ -24,12 +24,42 @@ const DEFAULTS = {
     useForcedSubtitles: false
   },
   audioAmplificationDb: 0,
-  persistAudioAmplification: false
+  persistAudioAmplification: false,
+  // Auto stream selection (matches the Android TV app). When the mode is not
+  // MANUAL, pressing play auto-selects a stream and plays it after a countdown.
+  streamAutoPlayMode: "MANUAL",
+  streamAutoPlaySource: "ALL_SOURCES",
+  streamAutoPlayRegex: "",
+  streamAutoPlayTimeoutSeconds: 3
 };
+
+const STREAM_AUTO_PLAY_MODES = ["MANUAL", "FIRST_STREAM", "REGEX_MATCH"];
+const STREAM_AUTO_PLAY_SOURCES = ["ALL_SOURCES", "INSTALLED_ADDONS_ONLY", "ENABLED_PLUGINS_ONLY"];
+
+function normalizeStreamAutoPlayMode(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return STREAM_AUTO_PLAY_MODES.includes(normalized) ? normalized : "MANUAL";
+}
+
+function normalizeStreamAutoPlaySource(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return STREAM_AUTO_PLAY_SOURCES.includes(normalized) ? normalized : "ALL_SOURCES";
+}
+
+function normalizeStreamAutoPlayTimeout(value) {
+  const seconds = Math.trunc(Number(value));
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return DEFAULTS.streamAutoPlayTimeoutSeconds;
+  }
+  return Math.min(60, seconds);
+}
 
 function extractLanguageCode(value, fallback = "off") {
   if (value && typeof value === "object") {
-    return extractLanguageCode(value.id ?? value.value ?? value.code ?? value.language ?? value.languageCode, fallback);
+    return extractLanguageCode(
+      value.id ?? value.value ?? value.code ?? value.language ?? value.languageCode,
+      fallback
+    );
   }
   const code = String(value ?? "").trim();
   if (!code || code.toLowerCase() === "[object object]") {
@@ -83,9 +113,12 @@ function normalizePlayerSettings(settings = {}) {
 
   if (preferredLanguage === "forced") {
     useForcedSubtitles = true;
-    preferredLanguage = secondaryPreferredLanguage && secondaryPreferredLanguage !== "forced" && secondaryPreferredLanguage !== "off"
-      ? secondaryPreferredLanguage
-      : "en";
+    preferredLanguage =
+      secondaryPreferredLanguage &&
+      secondaryPreferredLanguage !== "forced" &&
+      secondaryPreferredLanguage !== "off"
+        ? secondaryPreferredLanguage
+        : "en";
     secondaryPreferredLanguage = "off";
   }
   if (secondaryPreferredLanguage === "forced") {
@@ -96,6 +129,10 @@ function normalizePlayerSettings(settings = {}) {
   return {
     ...DEFAULTS,
     ...settings,
+    streamAutoPlayMode: normalizeStreamAutoPlayMode(settings.streamAutoPlayMode ?? DEFAULTS.streamAutoPlayMode),
+    streamAutoPlaySource: normalizeStreamAutoPlaySource(settings.streamAutoPlaySource ?? DEFAULTS.streamAutoPlaySource),
+    streamAutoPlayRegex: String(settings.streamAutoPlayRegex ?? "").slice(0, 500),
+    streamAutoPlayTimeoutSeconds: normalizeStreamAutoPlayTimeout(settings.streamAutoPlayTimeoutSeconds),
     subtitlesEnabled,
     subtitleLanguage: preferredLanguage,
     secondarySubtitleLanguage: secondaryPreferredLanguage,
@@ -124,7 +161,6 @@ const store = createProfileScopedStore({
 });
 
 export const PlayerSettingsStore = {
-
   getForProfile(profileId) {
     return store.getForProfile(profileId);
   },
@@ -144,5 +180,4 @@ export const PlayerSettingsStore = {
   set(partial, options = {}) {
     return store.set(partial, options);
   }
-
 };

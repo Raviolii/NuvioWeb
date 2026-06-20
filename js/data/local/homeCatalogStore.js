@@ -30,8 +30,17 @@ const store = createProfileScopedStore({
   normalize: normalizeHomeCatalogPrefs
 });
 
-export const HomeCatalogStore = {
+function queueHomeCatalogSettingsSync(profileId = null) {
+  import("../../core/profile/homeCatalogSettingsSyncService.js")
+    .then(({ HomeCatalogSettingsSyncService }) =>
+      HomeCatalogSettingsSyncService.triggerPush(profileId)
+    )
+    .catch((error) => {
+      console.warn("Home catalog settings sync enqueue failed", error);
+    });
+}
 
+export const HomeCatalogStore = {
   getForProfile(profileId) {
     return store.getForProfile(profileId);
   },
@@ -50,6 +59,9 @@ export const HomeCatalogStore = {
       return;
     }
     store.replaceForProfile(profileId, next, options);
+    if (!options.silentSync) {
+      queueHomeCatalogSettingsSync(profileId);
+    }
   },
 
   set(partial, { silentSync = false, profileId = null } = {}) {
@@ -86,5 +98,4 @@ export const HomeCatalogStore = {
       silentSync: Boolean(options.silentSync)
     });
   }
-
 };

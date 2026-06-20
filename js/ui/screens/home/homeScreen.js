@@ -1079,7 +1079,7 @@ function buildProgressStatus(item) {
   const effectivePositionMs = Math.max(0, Math.min(durationMs, positionMs));
   const remainingMinutes = Math.max(0, Math.round((durationMs - effectivePositionMs) / 60000));
   const progress = Math.max(0, Math.min(1, effectivePositionMs / durationMs));
-  if (progress >= 0.85 || remainingMinutes <= 10) {
+  if (progress >= CW_PROGRESS_END_THRESHOLD || remainingMinutes <= 10) {
     return t("home.continueStatusAlmostDone", {}, "Almost done");
   }
   if (remainingMinutes > 0) {
@@ -1682,30 +1682,6 @@ function buildPosterSubtitle(item, layoutMode) {
   return firstNonEmpty(extractYear(normalized), normalized.releaseInfo, "");
 }
 
-function buildExpandedPosterMeta(item) {
-  if (isCollectionFolderItem(item)) {
-    return "";
-  }
-  const normalized = normalizeCatalogItem(item);
-  const parts = [];
-  const typeLabel = toTitleCase(normalized.type || normalized.apiType || "movie");
-  if (typeLabel) {
-    parts.push(typeLabel);
-  }
-  if (normalized.genres?.[0]) {
-    parts.push(normalized.genres[0]);
-  }
-  const year = extractYear(normalized);
-  if (year) {
-    parts.push(year);
-  }
-  const imdb = resolveImdbRating(normalized);
-  if (imdb) {
-    parts.push(`IMDb ${imdb}`);
-  }
-  return parts.join("  ·  ");
-}
-
 function renderRowHeader(title, subtitle = "") {
   return `
     <div class="home-row-head">
@@ -1840,7 +1816,11 @@ function continueWatchingStreamParams(item, options = {}) {
     landscapePoster: firstNonEmpty(normalized.landscapePoster, normalized.backdrop, normalized.background, normalized.poster),
     poster: firstNonEmpty(normalized.poster, normalized.backdrop, normalized.background),
     logo: firstNonEmpty(normalized.logo),
-    resumePositionMs: options.startOver ? 0 : (Number(normalized.positionMs || 0) || 0)
+    resumePositionMs: options.startOver ? 0 : (Number(normalized.positionMs || 0) || 0),
+    resumeProgressPercent: options.startOver ? null : (normalized.progressPercent ?? null),
+    resumeDurationMs: options.startOver ? 0 : (Number(normalized.durationMs || 0) || 0),
+    resumeStreamIdentity: options.startOver ? null : (normalized.streamIdentity || null),
+    startFromBeginning: Boolean(options.startOver)
   };
 }
 
@@ -2049,7 +2029,6 @@ export function createPosterCardMarkup(item, rowIndex, itemIndex, itemType, rowD
   const isLoading = Boolean(item?.isLoading);
   const normalized = normalizeCatalogItem(item, itemType);
   const subtitle = buildPosterSubtitle(normalized, layoutMode);
-  const expandedMeta = buildExpandedPosterMeta(normalized);
   const preferredLandscapePosterSrc = firstNonEmpty(normalized.landscapePoster);
   const useLandscapePoster = layoutMode === "modern" && preferLandscapePoster;
   const landscapeVisualSrc = firstNonEmpty(
@@ -2122,12 +2101,6 @@ export function createPosterCardMarkup(item, rowIndex, itemIndex, itemType, rowD
           </div>
         ` : ""}
       </div>
-      ${suppressPosterText ? "" : `
-        <div class="home-poster-expanded-copy">
-          ${(!isLoading && expandedMeta) ? `<div class="home-poster-expanded-meta">${escapeHtml(expandedMeta)}</div>` : ""}
-          ${(!isLoading && normalized.description) ? `<div class="home-poster-expanded-description">${escapeHtml(normalized.description)}</div>` : ""}
-        </div>
-      `}
       ${shouldShowLabels ? `
         <div class="home-poster-copy">
           <div class="home-poster-title">${escapeHtml(normalized.name || "Untitled")}</div>
@@ -2982,6 +2955,21 @@ export const HomeScreen = {
       return Math.min(baseline, 90);
     }
     return baseline + 40;
+  },
+
+  shouldUseImmediateHorizontalScrollForNode(node) {
+    return Boolean(
+      node?.matches?.(".home-continue-card.focusable")
+      && (Platform.isWebOS() || this.isPerformanceConstrained() || this.isLegacyTvRuntime())
+    );
+  },
+
+  shouldDeferContinueWatchingFocusEffects(node, direction = null, inputMeta = null) {
+    return Boolean(
+      inputMeta?.repeat
+      && (direction === "left" || direction === "right")
+      && this.shouldUseImmediateHorizontalScrollForNode(node)
+    );
   },
 
   getBackgroundRenderDelay() {
@@ -4090,9 +4078,13 @@ export const HomeScreen = {
       autoOpenContinueWatching: true,
       returnHomeOnBack: true,
       resumeProgressMs: Number(params.resumePositionMs || 0) || 0,
+      resumeProgressPercent: params.resumeProgressPercent ?? null,
+      resumeDurationMs: Number(params.resumeDurationMs || 0) || 0,
+      startFromBeginning: Boolean(params.startFromBeginning),
       resumeVideoId: normalized.videoId || null,
       resumeSeason: normalized.season ?? null,
-      resumeEpisode: normalized.episode ?? null
+      resumeEpisode: normalized.episode ?? null,
+      resumeStreamIdentity: params.resumeStreamIdentity || null
     });
     return true;
   },
@@ -5057,7 +5049,7 @@ export const HomeScreen = {
     this.homeTruncationScope = null;
     this.applyModernHeroDescriptionBounds(root);
     const nodes = root.querySelectorAll(
-      ".home-hero-description, .home-poster-title, .home-poster-subtitle, .home-poster-expanded-meta, .home-poster-expanded-description"
+      ".home-hero-description, .home-poster-title, .home-poster-subtitle"
     );
     nodes.forEach((node) => {
       if (!(node instanceof HTMLElement)) {
@@ -5892,6 +5884,11 @@ export const HomeScreen = {
         if (Math.abs(Number(next.container.scrollLeft || 0) - Number(next.value || 0)) <= 1) {
           return;
         }
+        if (this.shouldUseImmediateHorizontalScrollForNode(_target)) {
+          this.cancelScrollAnimation(next.container, "x");
+          next.container.scrollLeft = Math.round(Number(next.value || 0));
+          return;
+        }
         this.animateSpringScroll(next.container, "x", next.value);
       });
       return;
@@ -5908,16 +5905,36 @@ export const HomeScreen = {
     const visibleRight = metrics.visibleRight;
 
     if (targetLeft < visibleLeft) {
+      if (this.shouldUseImmediateHorizontalScrollForNode(target)) {
+        this.cancelScrollAnimation(track, "x");
+        track.scrollLeft = Math.max(0, Math.round(targetLeft - metrics.leftPadding));
+        return;
+      }
       this.animateScroll(track, "x", targetLeft - metrics.leftPadding, this.getScrollDuration(160));
       return;
     }
     if (targetRight > visibleRight) {
+      if (this.shouldUseImmediateHorizontalScrollForNode(target)) {
+        this.cancelScrollAnimation(track, "x");
+        const maxScrollLeft = Math.max(0, Number(track.scrollWidth || 0) - Number(track.clientWidth || 0));
+        track.scrollLeft = Math.max(
+          0,
+          Math.min(maxScrollLeft, Math.round(targetRight - track.clientWidth + metrics.safeRightPadding))
+        );
+        return;
+      }
       this.animateScroll(track, "x", targetRight - track.clientWidth + metrics.safeRightPadding, this.getScrollDuration(160));
       return;
     }
     if (this.layoutMode !== "modern" && !direction) {
       const targetCenter = targetLeft + (target.offsetWidth / 2);
       const centeredLeft = targetCenter - (track.clientWidth / 2);
+      if (this.shouldUseImmediateHorizontalScrollForNode(target)) {
+        this.cancelScrollAnimation(track, "x");
+        const maxScrollLeft = Math.max(0, Number(track.scrollWidth || 0) - Number(track.clientWidth || 0));
+        track.scrollLeft = Math.max(0, Math.min(maxScrollLeft, Math.round(centeredLeft)));
+        return;
+      }
       this.animateScroll(track, "x", centeredLeft, this.getScrollDuration(160));
     }
   },
@@ -5952,13 +5969,20 @@ export const HomeScreen = {
     if (this.isMainNode(target)) {
       this.lastMainFocus = target;
       this.rememberMainRowFocus(target);
+      const shouldDeferFocusEffects = this.shouldDeferContinueWatchingFocusEffects(
+        target,
+        direction,
+        inputMeta
+      );
       const usingDelayedCameraFollow = this.scheduleModernCameraFollow(target, direction, current, scrollAdjustments, inputMeta);
       if (!usingDelayedCameraFollow) {
         this.ensureTrackHorizontalVisibility(target, direction, scrollAdjustments.horizontal);
         this.ensureMainVerticalVisibility(target, direction, current, scrollAdjustments.vertical);
       }
-      this.scheduleModernHeroUpdate(target);
-      this.scheduleFocusedPosterFlow(target);
+      if (!shouldDeferFocusEffects) {
+        this.scheduleModernHeroUpdate(target);
+        this.scheduleFocusedPosterFlow(target);
+      }
     } else {
       this.cancelModernCameraFollow({ stopAnimations: true });
       this.cancelPendingHeroFocus();
@@ -6835,13 +6859,15 @@ export const HomeScreen = {
     const allKeys = Array.from(rowMap.keys());
     const orderedKeys = HomeCatalogStore.ensureOrderKeys(allKeys);
     const disabledKeys = new Set(HomeCatalogStore.get().disabled || []);
-    const pinnedTopRows = collectionRows.filter((row) => row.pinToTop && !disabledKeys.has(row.homeCatalogDisableKey));
+    const isRowDisabled = (row) =>
+      disabledKeys.has(row.homeCatalogDisableKey) || disabledKeys.has(row.homeCatalogKey);
+    const pinnedTopRows = collectionRows.filter((row) => row.pinToTop && !isRowDisabled(row));
     const pinnedKeys = new Set(pinnedTopRows.map((row) => row.homeCatalogKey));
     const orderedRows = orderedKeys
       .filter((key) => !pinnedKeys.has(key))
       .map((key) => rowMap.get(key))
       .filter(Boolean)
-      .filter((row) => !disabledKeys.has(row.homeCatalogDisableKey));
+      .filter((row) => !isRowDisabled(row));
     return [...pinnedTopRows, ...orderedRows];
   },
 
@@ -7054,7 +7080,14 @@ export const HomeScreen = {
       ? (this.pendingCollectionRouteReturnAnimation ? " nuvio-route-slide-enter" : " home-route-content-enter")
       : "";
     this.pendingCollectionRouteReturnAnimation = false;
-    const sidebarFocusLocked = Boolean(this.sidebarExpanded);
+    // On Back, only keep the sidebar expanded if the restored focus actually
+    // belonged to the sidebar.
+    if (this.isRestoringFocusFromBack && retainedFocusState?.focusKind !== "sidebar") {
+      this.sidebarExpanded = false;
+    }
+    const sidebarFocusLocked = Boolean(
+      this.sidebarExpanded && retainedFocusState?.focusKind === "sidebar"
+    );
 
     this.container.innerHTML = `
       <div class="home-shell home-screen-shell ${layoutClass}"${sizingStyle ? ` style="${escapeAttribute(sizingStyle)}"` : ""}>
@@ -7878,14 +7911,22 @@ export const HomeScreen = {
     if (this._homeHoldDialog) {
       return true;
     }
+    const keyCode = Number(event?.keyCode || 0);
+    if ((keyCode === 37 || keyCode === 39) && this.layoutMode === "modern") {
+      const current = this.getCurrentFocusedNode();
+      if (this.shouldUseImmediateHorizontalScrollForNode(current)) {
+        this.scheduleModernHeroUpdate(current);
+        this.scheduleFocusedPosterFlow(current);
+      }
+    }
     if (this.suppressHoldMenuEnterUntilKeyUp) {
       this.suppressHoldMenuEnterUntilKeyUp = false;
-      if (Number(event?.keyCode || 0) === 13) {
+      if (keyCode === 13) {
         event?.preventDefault?.();
         return;
       }
     }
-    if (Number(event?.keyCode || 0) !== 13) {
+    if (keyCode !== 13) {
       return;
     }
     const current = this.getCurrentFocusedNode();
@@ -7939,7 +7980,7 @@ export const HomeScreen = {
       if (!rowKey || this._trackScrollHandlers.has(track)) {
         return;
       }
-      const handler = () => {
+      const runPagination = () => {
         if (this._trackPaginationInFlight?.has(rowKey)) {
           return;
         }
@@ -8027,6 +8068,16 @@ export const HomeScreen = {
           console.warn("Home track pagination failed for", rowKey, err);
         }).finally(() => {
           this._trackPaginationInFlight?.delete(rowKey);
+        });
+      };
+      let scrollRaf = 0;
+      const handler = () => {
+        if (scrollRaf) {
+          return;
+        }
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = 0;
+          runPagination();
         });
       };
       this._trackScrollHandlers.set(track, handler);

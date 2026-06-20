@@ -12,6 +12,11 @@ export function buildCatalogDisableKey(addonBaseUrl, type, catalogId, catalogNam
   return `${addonBaseUrl}_${type}_${catalogId}_${catalogName}`;
 }
 
+export function buildCollectionOrderKey(collectionId) {
+  const id = String(collectionId || "").trim();
+  return id ? `collection_${id}` : "";
+}
+
 export function toDisplayTypeLabel(value) {
   const raw = String(value || "").trim();
   if (!raw) {
@@ -21,6 +26,15 @@ export function toDisplayTypeLabel(value) {
 }
 
 export function buildOrderedCatalogItems(addons, savedOrderKeys = [], disabledKeys = []) {
+  return buildOrderedHomeCatalogItems(addons, [], savedOrderKeys, disabledKeys);
+}
+
+export function buildOrderedHomeCatalogItems(
+  addons,
+  collections = [],
+  savedOrderKeys = [],
+  disabledKeys = []
+) {
   const defaultEntries = [];
   const seenKeys = new Set();
   const disabledSet = new Set(disabledKeys || []);
@@ -36,7 +50,12 @@ export function buildOrderedCatalogItems(addons, savedOrderKeys = [], disabledKe
         seenKeys.add(key);
         defaultEntries.push({
           key,
-          disableKey: buildCatalogDisableKey(addon.baseUrl, catalog.apiType, catalog.id, catalog.name),
+          disableKey: buildCatalogDisableKey(
+            addon.baseUrl,
+            catalog.apiType,
+            catalog.id,
+            catalog.name
+          ),
           addonBaseUrl: addon.baseUrl,
           addonId: addon.id,
           addonName: addon.displayName,
@@ -48,19 +67,50 @@ export function buildOrderedCatalogItems(addons, savedOrderKeys = [], disabledKe
       });
   });
 
+  (collections || []).forEach((collection) => {
+    const key = buildCollectionOrderKey(collection?.id);
+    if (!key || seenKeys.has(key)) {
+      return;
+    }
+    seenKeys.add(key);
+    const folderCount = Array.isArray(collection?.folders) ? collection.folders.length : 0;
+    defaultEntries.push({
+      key,
+      disableKey: key,
+      addonBaseUrl: "",
+      addonId: "",
+      addonName: folderCount === 1 ? "1 folder" : `${folderCount} folders`,
+      catalogId: collection.id,
+      catalogName: collection.title,
+      type: "collection",
+      isCollection: true,
+      collectionId: collection.id,
+      isDisabled: false
+    });
+  });
+
   const entryByKey = new Map(defaultEntries.map((entry) => [entry.key, entry]));
   const defaultOrderKeys = defaultEntries.map((entry) => entry.key);
-  const savedValid = (savedOrderKeys || [])
-    .filter((key, index, array) => array.indexOf(key) === index && entryByKey.has(key));
+  const savedValid = (savedOrderKeys || []).filter(
+    (key, index, array) => array.indexOf(key) === index && entryByKey.has(key)
+  );
   const savedSet = new Set(savedValid);
   const effectiveOrder = [...savedValid, ...defaultOrderKeys.filter((key) => !savedSet.has(key))];
+
+  function isEntryDisabled(entry) {
+    return disabledSet.has(entry.disableKey) || disabledSet.has(entry.key);
+  }
 
   return effectiveOrder
     .map((key) => entryByKey.get(key))
     .filter(Boolean)
     .map((entry, index, array) => ({
       ...entry,
-      isDisabled: disabledSet.has(entry.disableKey),
+      disableKey:
+        disabledSet.has(entry.key) && !disabledSet.has(entry.disableKey)
+          ? entry.key
+          : entry.disableKey,
+      isDisabled: isEntryDisabled(entry),
       canMoveUp: index > 0,
       canMoveDown: index < array.length - 1
     }));

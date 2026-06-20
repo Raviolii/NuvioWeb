@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { constants as fsConstants } from "node:fs";
 import { readAppMetadata, syncVersionFiles } from "./appMetadata.mjs";
+import { writeRuntimeEnvScriptFile } from "./envProperties.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -38,28 +39,6 @@ const webOsLegacyPreloadScript = `  <script>
       };
     }
   </script>`;
-const defaultEnvFileContents = `(function defineNuvioEnv() {
-  var root = typeof globalThis !== "undefined" ? globalThis : window;
-  var env = root.__NUVIO_ENV__ || {};
-  var values = {
-    SUPABASE_URL: "",
-    SUPABASE_ANON_KEY: "",
-    TV_LOGIN_REDIRECT_BASE_URL: "",
-    YOUTUBE_PROXY_URL: "youtube-proxy.html",
-    ADDON_REMOTE_BASE_URL: "",
-    TIZEN_ENGINEFS_SERVICE_ID: "",
-    ENABLE_REMOTE_WRAPPER_MODE: false,
-    PREFERRED_PLAYBACK_ORDER: ["native-hls", "hls.js", "dash.js", "native-file", "platform-avplay"],
-    TMDB_API_KEY: ""
-  };
-  for (var key in values) {
-    if (Object.prototype.hasOwnProperty.call(values, key)) {
-      env[key] = values[key];
-    }
-  }
-  root.__NUVIO_ENV__ = env;
-}());
-`;
 const wrapperIconFiles = {
   webosIcon: {
     source: path.join(rootDir, "assets", "images", "icon.png"),
@@ -80,7 +59,9 @@ const wrapperIconFiles = {
 };
 
 function fail(message) {
-  throw new Error(`${message}\n\nUsage: node ./scripts/sync-wrapper.mjs --webos|--tizen --path /absolute/path/to/project`);
+  throw new Error(
+    `${message}\n\nUsage: node ./scripts/sync-wrapper.mjs --webos|--tizen --path /absolute/path/to/project`
+  );
 }
 
 function parseArgs(argv) {
@@ -167,16 +148,21 @@ async function syncFolder(targetDir, folderName) {
   await cp(path.join(distDir, folderName), path.join(targetDir, folderName), { recursive: true });
 }
 
-async function syncRootFolder(targetDir, folderName) {
-  await rm(path.join(targetDir, folderName), { recursive: true, force: true });
-  await cp(path.join(rootDir, folderName), path.join(targetDir, folderName), { recursive: true });
-}
-
-async function syncServiceFolder(targetDir, serviceDirName, { targetServiceDirName = serviceDirName } = {}) {
+async function syncServiceFolder(
+  targetDir,
+  serviceDirName,
+  { targetServiceDirName = serviceDirName } = {}
+) {
   const targetServicesDir = path.join(targetDir, "services");
   await mkdir(targetServicesDir, { recursive: true });
-  await rm(path.join(targetServicesDir, legacyWebOsServiceSourceDirName), { recursive: true, force: true });
-  await rm(path.join(targetServicesDir, webOsServiceSourceDirName), { recursive: true, force: true });
+  await rm(path.join(targetServicesDir, legacyWebOsServiceSourceDirName), {
+    recursive: true,
+    force: true
+  });
+  await rm(path.join(targetServicesDir, webOsServiceSourceDirName), {
+    recursive: true,
+    force: true
+  });
   await rm(path.join(targetServicesDir, webOsServiceDirName), { recursive: true, force: true });
   await cp(
     path.join(rootDir, "services", serviceDirName),
@@ -199,21 +185,13 @@ async function syncBuild(targetDir) {
     await cp(path.join(distDir, "nuvio.env.js"), path.join(targetDir, "nuvio.env.js"));
   } catch (error) {
     if (error?.code === "ENOENT") {
-      try {
-        await cp(path.join(rootDir, "nuvio.env.example.js"), path.join(targetDir, "nuvio.env.js"));
-      } catch (fallbackError) {
-        if (fallbackError?.code !== "ENOENT") {
-          throw fallbackError;
-        }
-        await writeFile(path.join(targetDir, "nuvio.env.js"), defaultEnvFileContents, "utf8");
-      }
+      await writeRuntimeEnvScriptFile(path.join(targetDir, "nuvio.env.js"), { rootDir });
       return;
     }
     if (error?.code !== "ENOENT") {
       throw error;
     }
   }
-
 }
 async function resolveBundledWebOsRuntime(targetDir) {
   const targetScriptPath = path.join(targetDir, webOsRuntimeScriptPath);
@@ -225,9 +203,7 @@ async function resolveBundledWebOsRuntime(targetDir) {
 }
 
 function buildWebOsIndexHtml({ webOsScriptPath = "" } = {}) {
-  const webOsScriptTag = webOsScriptPath
-    ? `  <script src="${webOsScriptPath}"></script>\n`
-    : "";
+  const webOsScriptTag = webOsScriptPath ? `  <script src="${webOsScriptPath}"></script>\n` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -392,11 +368,16 @@ async function syncWrapperIcons(targetDir, { includeLargeIcon }) {
     iconTasks.push(wrapperIconFiles.webosSplash);
   }
 
-  await Promise.all(iconTasks.map(({ source, target }) => cp(source, path.join(targetDir, target))));
+  await Promise.all(
+    iconTasks.map(({ source, target }) => cp(source, path.join(targetDir, target)))
+  );
 }
 
 async function syncTizenIcon(targetDir) {
-  await cp(wrapperIconFiles.tizenIcon.source, path.join(targetDir, wrapperIconFiles.tizenIcon.target));
+  await cp(
+    wrapperIconFiles.tizenIcon.source,
+    path.join(targetDir, wrapperIconFiles.tizenIcon.target)
+  );
 }
 
 async function updateWebOsMetadata(targetDir) {
@@ -432,10 +413,15 @@ async function syncWebOsCompanionFiles(targetDir) {
     path.join(serviceDir, "src", "serverHost.js")
   ];
 
-  await Promise.all(filesToRewrite.map(async (filePath) => {
-    const current = await readTextFile(filePath, `Expected webOS service file at ${filePath}.`);
-    await writeTextFile(filePath, current.replaceAll(legacyWebOsServiceSourceDirName, webOsServiceId));
-  }));
+  await Promise.all(
+    filesToRewrite.map(async (filePath) => {
+      const current = await readTextFile(filePath, `Expected webOS service file at ${filePath}.`);
+      await writeTextFile(
+        filePath,
+        current.replaceAll(legacyWebOsServiceSourceDirName, webOsServiceId)
+      );
+    })
+  );
 }
 
 async function syncTizenEngineFsService(targetDir) {
@@ -444,8 +430,15 @@ async function syncTizenEngineFsService(targetDir) {
   await mkdir(serviceDir, { recursive: true });
 
   await Promise.all([
-    cp(path.join(rootDir, "services", "tizen", "enginefs-service.js"), path.join(targetDir, tizenEngineFsServiceRelativePath)),
-    cp(path.join(rootDir, "services", "tizen", "runtime"), path.join(targetDir, tizenEngineFsRuntimeDirRelativePath), { recursive: true })
+    cp(
+      path.join(rootDir, "services", "tizen", "enginefs-service.js"),
+      path.join(targetDir, tizenEngineFsServiceRelativePath)
+    ),
+    cp(
+      path.join(rootDir, "services", "tizen", "runtime"),
+      path.join(targetDir, tizenEngineFsRuntimeDirRelativePath),
+      { recursive: true }
+    )
   ]);
 }
 
@@ -459,7 +452,8 @@ function upsertXmlTag(xml, tagName, innerText) {
 }
 
 function upsertTizenIcon(xml, iconSrc) {
-  const iconPattern = /<icon\b[^>]*src="[^"]*"[^>]*>([\s\S]*?)<\/icon>|<icon\b[^>]*src="[^"]*"[^>]*\/>/;
+  const iconPattern =
+    /<icon\b[^>]*src="[^"]*"[^>]*>([\s\S]*?)<\/icon>|<icon\b[^>]*src="[^"]*"[^>]*\/>/;
   if (iconPattern.test(xml)) {
     let replaced = false;
     return xml.replace(iconPattern, () => {
@@ -489,7 +483,10 @@ function readTizenApplicationId(xml) {
 }
 
 function removeTizenEngineFsService(xml) {
-  return String(xml || "").replace(/\s*<tizen:service\b[^>]*EngineFsService[^>]*>[\s\S]*?<\/tizen:service>/g, "");
+  return String(xml || "").replace(
+    /\s*<tizen:service\b[^>]*EngineFsService[^>]*>[\s\S]*?<\/tizen:service>/g,
+    ""
+  );
 }
 
 function upsertTizenEngineFsService(xml, serviceId) {

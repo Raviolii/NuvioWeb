@@ -9,6 +9,7 @@ import { WatchedItemsSyncService } from "./watchedItemsSyncService.js";
 import { PluginSyncService } from "./pluginSyncService.js";
 import { ProfileSettingsSyncService } from "./profileSettingsSyncService.js";
 import { CollectionSyncService } from "./collectionSyncService.js";
+import { HomeCatalogSettingsSyncService } from "./homeCatalogSettingsSyncService.js";
 import { ThemeManager } from "../../ui/theme/themeManager.js";
 import { I18n } from "../../i18n/index.js";
 
@@ -30,12 +31,18 @@ function normalizeProfileId(value) {
 async function collectKnownProfileIds(profiles = []) {
   const ids = [
     normalizeProfileId(ProfileManager.getActiveProfileId()),
-    ...(Array.isArray(profiles) ? profiles : []).map((profile) => normalizeProfileId(profile?.id ?? profile?.profileIndex))
+    ...(Array.isArray(profiles) ? profiles : []).map((profile) =>
+      normalizeProfileId(profile?.id ?? profile?.profileIndex)
+    )
   ].filter(Boolean);
 
   if (ids.length <= 1) {
     const storedProfiles = await ProfileManager.getProfiles().catch(() => []);
-    ids.push(...storedProfiles.map((profile) => normalizeProfileId(profile?.id ?? profile?.profileIndex)).filter(Boolean));
+    ids.push(
+      ...storedProfiles
+        .map((profile) => normalizeProfileId(profile?.id ?? profile?.profileIndex))
+        .filter(Boolean)
+    );
   }
 
   return Array.from(new Set(ids));
@@ -91,7 +98,8 @@ export const StartupSyncService = {
         const profiles = await ProfileSyncService.pull();
         const profileIds = await collectKnownProfileIds(profiles);
         for (const profileId of profileIds) {
-          didApplyProfileSettings = (await ProfileSettingsSyncService.pull(profileId)) || didApplyProfileSettings;
+          didApplyProfileSettings =
+            (await ProfileSettingsSyncService.pull(profileId)) || didApplyProfileSettings;
         }
         if (didApplyProfileSettings) {
           await I18n.init();
@@ -99,6 +107,7 @@ export const StartupSyncService = {
           I18n.apply();
         }
         await CollectionSyncService.pull();
+        await HomeCatalogSettingsSyncService.pull();
         await PluginSyncService.pull();
         await LibrarySyncService.pull();
         await SavedLibrarySyncService.pull();
@@ -123,6 +132,7 @@ export const StartupSyncService = {
       await ProfileSyncService.push();
       await ProfileSettingsSyncService.push();
       await CollectionSyncService.push();
+      await HomeCatalogSettingsSyncService.push();
       await PluginSyncService.push();
       await LibrarySyncService.push();
       await SavedLibrarySyncService.push();
