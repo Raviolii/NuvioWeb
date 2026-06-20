@@ -3,6 +3,7 @@ import { LocalStore } from "../../core/storage/localStore.js";
 import { ProfileManager } from "../../core/profile/profileManager.js";
 import { AddonApi } from "../remote/api/addonApi.js";
 import { PluginRuntime } from "../../core/player/pluginRuntime.js";
+import { ENABLE_SCRAPERS_AS_SOURCES } from "../../config.js";
 
 const ADDON_URLS_KEY = "installedAddonUrls";
 const ADDON_DISPLAY_NAMES_KEY = "installedAddonDisplayNames";
@@ -400,19 +401,32 @@ class AddonRepository {
     this.manifestErrorCache.delete(clean);
     this.invalidateInstalledAddonsCache();
     this.notifyAddonsChanged("add");
-    // Try to register as a plugin source so it's active immediately (avoid duplicates)
-    try {
-      const existing = PluginRuntime.listSources().some(
-        (s) => String(s?.urlTemplate || "").replace(/\/+$/, "") === String(clean).replace(/\/+$/, "")
-      );
-      if (!existing) {
-        const fetched = await this.fetchAddon(clean, { preferCache: true });
-        const displayName = fetched?.status === "success" ? fetched.data.displayName || fetched.data.name : null;
-        PluginRuntime.addSource({ name: displayName || clean, urlTemplate: clean, enabled: true });
+    // Optionally register `scrapers` entries as plugin sources (mobile-like behavior)
+    const convertFlag = Boolean(ENABLE_SCRAPERS_AS_SOURCES || LocalStore.get("convertScrapersToSources", false));
+    if (convertFlag) {
+      try {
+        const result = await safeApiCall(() => AddonApi.getManifest(this.buildManifestUrl(clean)));
+        if (result?.status === "success") {
+          const manifest = result.data || {};
+          if (Array.isArray(manifest.scrapers) && manifest.scrapers.length) {
+            manifest.scrapers.forEach((s) => {
+              try {
+                const filename = String(s.filename || s.file || "").trim();
+                if (!filename) return;
+                const sourceUrl = this.normalizeManifestAssetUrl(filename, clean) || `${clean}/${filename}`;
+                const exists = PluginRuntime.listSources().some(
+                  (src) => String(src.urlTemplate || "").replace(/\/+$/, "") === String(sourceUrl).replace(/\/+$/, "")
+                );
+                if (!exists) {
+                  PluginRuntime.addSource({ name: String(s.name || s.id || filename), urlTemplate: sourceUrl, enabled: true });
+                }
+              } catch (_) {}
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to register scrapers as plugin sources:", e);
       }
-    } catch (e) {
-      // Non-fatal - we still added the addon URL above
-      console.warn("Failed to auto-register plugin source for addon:", e);
     }
 
     return true;

@@ -36,6 +36,10 @@ export const ENABLE_PLUGINS =
   Object.prototype.hasOwnProperty.call(runtimeEnv, "ENABLE_PLUGINS")
     ? Boolean(runtimeEnv.ENABLE_PLUGINS)
     : true;
+export const ENABLE_SCRAPERS_AS_SOURCES =
+  Object.prototype.hasOwnProperty.call(runtimeEnv, "ENABLE_SCRAPERS_AS_SOURCES")
+    ? Boolean(runtimeEnv.ENABLE_SCRAPERS_AS_SOURCES)
+    : false;
 export const PREFERRED_PLAYBACK_ORDER = normalizePlaybackOrder(runtimeEnv.PREFERRED_PLAYBACK_ORDER);
 export const TMDB_API_KEY = String(runtimeEnv.TMDB_API_KEY || "").trim();
 export const TRAKT_CLIENT_ID = String(runtimeEnv.TRAKT_CLIENT_ID || "").trim();

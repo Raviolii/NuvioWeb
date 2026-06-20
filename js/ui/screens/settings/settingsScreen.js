@@ -2981,6 +2981,16 @@ export const SettingsScreen = {
       await this.render();
     });
 
+    this.actionMap.set("plugins:convert_scrapers", async () => {
+      try {
+        const current = Boolean(LocalStore.get("convertScrapersToSources", false));
+        LocalStore.set("convertScrapersToSources", !current);
+      } catch (e) {
+        console.warn("Toggle convert scrapers failed", e);
+      }
+      await this.render();
+    });
+
     this.actionMap.set("plugins:manage_from_phone", () => {
       Router.navigate("plugin");
     });
@@ -3092,6 +3102,13 @@ export const SettingsScreen = {
               {},
               "Add a custom plugin source by URL template"
             )
+          })}
+
+          ${this.renderToggleRow({
+            focusKey: "plugins:convert_scrapers",
+            title: "Convert scrapers to sources",
+            subtitle: "Automatically register scrapers from repositories as plugin sources (mobile-like)",
+            checked: Boolean(LocalStore.get("convertScrapersToSources", false))
           })}
 
           ${sources.length
