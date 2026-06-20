@@ -2,6 +2,7 @@ import { safeApiCall } from "../../core/network/safeApiCall.js";
 import { LocalStore } from "../../core/storage/localStore.js";
 import { ProfileManager } from "../../core/profile/profileManager.js";
 import { AddonApi } from "../remote/api/addonApi.js";
+import { PluginRuntime } from "../../core/player/pluginRuntime.js";
 
 const ADDON_URLS_KEY = "installedAddonUrls";
 const ADDON_DISPLAY_NAMES_KEY = "installedAddonDisplayNames";
@@ -399,6 +400,21 @@ class AddonRepository {
     this.manifestErrorCache.delete(clean);
     this.invalidateInstalledAddonsCache();
     this.notifyAddonsChanged("add");
+    // Try to register as a plugin source so it's active immediately (avoid duplicates)
+    try {
+      const existing = PluginRuntime.listSources().some(
+        (s) => String(s?.urlTemplate || "").replace(/\/+$/, "") === String(clean).replace(/\/+$/, "")
+      );
+      if (!existing) {
+        const fetched = await this.fetchAddon(clean, { preferCache: true });
+        const displayName = fetched?.status === "success" ? fetched.data.displayName || fetched.data.name : null;
+        PluginRuntime.addSource({ name: displayName || clean, urlTemplate: clean, enabled: true });
+      }
+    } catch (e) {
+      // Non-fatal - we still added the addon URL above
+      console.warn("Failed to auto-register plugin source for addon:", e);
+    }
+
     return true;
   }
 
